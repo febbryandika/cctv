@@ -5,6 +5,11 @@
 # windows by wall-clock time. The application code owns only authentication,
 # timeline arithmetic, and honesty about what was actually recorded.
 
+# This is the TRACKED source. `cd apps/api && bun run render:mediamtx` renders
+# it to mediamtx.yml, filling in ${CAMERA_IP} and ${ONVIF_PASSWORD_MD5} from
+# .env. The rendered file is gitignored because that hash is a password hash
+# (SPEC 15).
+
 logLevel: info
 
 # SPEC 7 binds these to 127.0.0.1 directly. Inside a container that would make
@@ -97,7 +102,7 @@ paths:
   # `publisher` via MTX_PATHS_YARD_SOURCE so the fake camera can publish to
   # this same path — a path cannot both pull a source and accept a publisher.
   yard:
-    source: rtsp://192.168.1.50:5543/<md5-of-onvif-password>/live/channel0
+    source: rtsp://${CAMERA_IP}:5543/${ONVIF_PASSWORD_MD5}/live/channel0
     sourceOnDemand: no # must record whether or not anyone is watching
     record: yes
     recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
@@ -108,7 +113,11 @@ paths:
   # sourceOnDemand keeps this quiet in development: with no real camera it is
   # never dialled until something actually watches it, so it does not spam
   # connection errors the way a `no` would.
+  #
+  # Nothing publishes to yard_sub in development — fakecam only feeds `yard`.
+  # Build-order step 5 (live view) reads this path and will need its own dev
+  # source then; adding one now would be config no test in this phase can check.
   yard_sub:
-    source: rtsp://192.168.1.50:5543/<md5-of-onvif-password>/live/channel1
+    source: rtsp://${CAMERA_IP}:5543/${ONVIF_PASSWORD_MD5}/live/channel1
     sourceOnDemand: yes
     record: no

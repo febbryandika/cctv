@@ -49,6 +49,11 @@ coverage/
 # Recorded video. MediaMTX writes ~27 GB/day here (SPEC 5.3); never tracked.
 /recordings/
 
+# Generated MediaMTX config. Rendered from the tracked mediamtx.template.yml by
+# `cd apps/api && bun run render:mediamtx`. It embeds md5(ONVIF_PASSWORD), so a
+# committed copy would commit a password hash (SPEC 15).
+/mediamtx.yml
+
 # Local database files
 *.sqlite
 *.sqlite3
