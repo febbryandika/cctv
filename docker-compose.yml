@@ -3,11 +3,17 @@
 # Development cannot depend on a physical camera being powered on, and CI
 # certainly cannot. `docker compose stop fakecam` produces a real recording
 # gap, which is how the timeline gets tested without unplugging anything.
+#
+# SPEC 7 uses `network_mode: host`. That only works on Linux — on macOS and
+# Windows the container shares the Docker VM's network namespace, not the
+# host's, so every port binds somewhere the developer's machine cannot reach.
+# Ports are published explicitly instead, each one to 127.0.0.1 so the SPEC 15
+# loopback guarantee is preserved rather than merely relocated.
 
 services:
   mediamtx:
     image: bluenviron/mediamtx:latest
-    network_mode: host
+    restart: unless-stopped
     environment:
       # mediamtx.yml gives `yard` a pull source (the real camera), but the
       # fakecam below PUBLISHES to that same path, and a path cannot do both.
@@ -15,6 +21,12 @@ services:
       # variable, so development flips the source without editing the file.
       # Set MTX_PATHS_YARD_SOURCE to the camera URL in .env to pull instead.
       MTX_PATHS_YARD_SOURCE: ${MTX_PATHS_YARD_SOURCE:-publisher}
+    ports:
+      - '127.0.0.1:8554:8554/tcp' # RTSP  — TCP only, see rtspTransports
+      - '127.0.0.1:8889:8889/tcp' # WebRTC/WHEP signalling
+      - '127.0.0.1:8189:8189/udp' # WebRTC ICE — media, not signalling
+      - '127.0.0.1:9997:9997/tcp' # control API
+      - '127.0.0.1:9996:9996/tcp' # playback API
     volumes:
       - ./mediamtx.yml:/mediamtx.yml
       - ./recordings:/recordings
@@ -24,27 +36,46 @@ services:
   # when you want the hosted one (SPEC 5.1).
   postgres:
     image: postgres:17-alpine
-    network_mode: host
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ronda
       POSTGRES_PASSWORD: ronda
       POSTGRES_DB: ronda
+    ports:
+      # 5432 on the host, not in the container: a natively-installed Postgres
+      # commonly owns the standard port, and plain `lsof` will not show it if
+      # it belongs to another user — check with `netstat -an | grep 5432`.
+      # DATABASE_URL in .env.example matches this.
+      - '127.0.0.1:5439:5432'
     volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ronda -d ronda']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # The fixture must already be H.264 so `-c copy` works — no transcode,
   # negligible CPU, and the stream behaves like a real camera.
   #
-  # TODO(build order step 1): apps/api/fixtures/yard-loop.mp4 does not exist
-  # yet, so this service will restart-loop until it is added.
+  # Publishes to `mediamtx` by service name, not 127.0.0.1: without host
+  # networking each container has its own loopback. `-rtsp_transport tcp`
+  # because the server is TCP-only (ffmpeg's RTSP muxer defaults to UDP).
   fakecam:
     image: linuxserver/ffmpeg:latest
-    network_mode: host
-    depends_on: [mediamtx]
     restart: unless-stopped
+    depends_on: [mediamtx]
     volumes: [./apps/api/fixtures:/fixtures]
     command: >
       -re -stream_loop -1 -i /fixtures/yard-loop.mp4
-      -c copy -f rtsp rtsp://127.0.0.1:8554/yard
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/yard
 
 volumes:
   pgdata:
+
+# Pinned so mediamtx.yml can name it in authInternalUsers. Requests arriving
+# through a published port come from this network, not from loopback.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.255.0/24

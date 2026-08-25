@@ -7,35 +7,78 @@
 
 logLevel: info
 
-# Bind everything to loopback. The Hono API is the only way in, so auth cannot
-# be bypassed by hitting a port directly (SPEC 15).
-rtspAddress: 127.0.0.1:8554
-webrtcAddress: 127.0.0.1:8889
-apiAddress: 127.0.0.1:9997
-playbackAddress: 127.0.0.1:9996
+# SPEC 7 binds these to 127.0.0.1 directly. Inside a container that would make
+# them unreachable through a published port, so the loopback guarantee moves
+# one layer out: MediaMTX listens on all interfaces WITHIN its own network
+# namespace, and docker-compose.yml publishes each port to 127.0.0.1 only.
+#
+# The SPEC 15 property is unchanged and if anything stronger — nothing outside
+# this machine can reach a stream, and the container is network-isolated on top.
+rtspAddress: :8554
+webrtcAddress: :8889
+apiAddress: :9997
+playbackAddress: :9996
 
 api: yes
 playback: yes
 
 # Every protocol this project does not use is turned off, not just left
-# unbound. SPEC 7 pins the four addresses above, but a MediaMTX left otherwise
-# at its defaults also serves RTMP on :1935, SRT on :8890 and MoQ on
-# :8892-8893 — on every interface. Each of those is a complete, unauthenticated
-# way to read `yard` from anywhere on the LAN, which is exactly what SPEC 15
-# says must not exist. `hls: no` was already specified for a different reason
-# (SPEC 1.3); the rest follow the same logic.
+# unbound. A MediaMTX at its defaults also serves RTMP on :1935, SRT on :8890
+# and MoQ on :8892-8893 — each a complete, unauthenticated way to read `yard`.
+# `hls: no` was already specified for a different reason (SPEC 1.3); the rest
+# follow the same logic.
 hls: no
 rtmp: no
 srt: no
 moq: no
 
-# Deliberately left alone: RTSP still binds UDP/RTP on :8000-8001 and WebRTC
-# still binds UDP/ICE on :8189, both on every interface. Neither is an
-# independent read path — RTSP media requires a session negotiated over the
-# loopback-bound control port, and WebRTC media requires an ICE credential
-# exchanged during WHEP signalling, which only the authenticated API can reach.
-# Pinning them to loopback would also confine live view to a browser running on
-# this machine, which is a build-order step 5 decision, not a step 0 one.
+# TCP-only RTSP. This is the server setting, so it governs how `fakecam`
+# publishes, not how the real camera is pulled (that is per-path rtspTransport
+# and stays automatic). It removes the UDP/RTP and UDP/RTCP listeners on
+# :8000-8001 entirely, so there are two fewer ports to publish and two fewer
+# things listening.
+rtspTransports: [tcp]
+
+# WebRTC media does not flow through the API proxy — the browser talks to
+# MediaMTX directly over ICE — so MediaMTX must advertise an address the
+# browser can actually reach. From inside a container it would otherwise
+# advertise the container's private IP, and live view would fail with no
+# obvious cause. Advertise the published address instead.
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: [127.0.0.1]
+webrtcLocalUDPAddress: :8189
+
+# MediaMTX's default ACL allows the `api` action only from source IP 127.0.0.1,
+# which cannot work behind a published port: the container runtime NATs every
+# host connection to a gateway address (192.168.127.1 on a Podman/Docker
+# Desktop VM, the bridge gateway on native Linux), so the control API answers
+# "authentication error" for calls the Hono API is supposed to make.
+#
+# Naming those gateways here would be chasing a runtime implementation detail
+# for no security: a gateway address covers ALL host traffic, so allowing it
+# permits exactly what the published port already permits. The ACL cannot
+# express "only this machine" from behind NAT.
+#
+# The boundary that DOES hold is the publish address — docker-compose.yml binds
+# every port to 127.0.0.1, so nothing off this machine can reach them (SPEC 15).
+# That `127.0.0.1:` prefix is load-bearing; dropping it exposes the control API
+# to the LAN. If these ports ever need a wider bind, give this user a real
+# password rather than widening the IP list.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
 
 pathDefaults:
   recordFormat: fmp4
@@ -53,7 +96,6 @@ paths:
   # This `source` is the real camera. Docker Compose overrides it to
   # `publisher` via MTX_PATHS_YARD_SOURCE so the fake camera can publish to
   # this same path — a path cannot both pull a source and accept a publisher.
-  # See docker-compose.yml.
   yard:
     source: rtsp://192.168.1.50:5543/<md5-of-onvif-password>/live/channel0
     sourceOnDemand: no # must record whether or not anyone is watching
