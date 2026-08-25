@@ -8,8 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "typecheck": "tsgo --noEmit",
-    "typecheck:tsc": "tsc --noEmit",
+    "typecheck": "next typegen && tsgo --noEmit",
+    "typecheck:tsc": "next typegen && tsc --noEmit",
     "test:e2e": "playwright test"
   },
   "dependencies": {
