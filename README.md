@@ -77,11 +77,15 @@ ffplay -rtsp_transport tcp -fflags nobuffer rtsp://127.0.0.1:8554/yard
 
 # 2 — segments are landing on disk, one per 10 minutes
 ls -lh recordings/yard/
-#   2026-08-25_12-29-24-278292.mp4   31M
+#   2026-08-25_12-32-10-898156.mp4   31M   <- a full 10-minute segment
 
 # 3 — the playback API reports a timespan
 curl -s 'http://127.0.0.1:9996/list?path=yard'
-#   [{"start":"2026-08-25T12:29:24.278292Z","duration":32.03,"url":"..."}]
+#   [{"start":"2026-08-25T12:29:24.278292Z","duration":106.89,"url":"..."},
+#    {"start":"2026-08-25T12:32:10.898156Z","duration":618.53,"url":"..."}]
+#   Two timespans means a recording gap between them; contiguous 10-minute
+#   segments are merged into one. `docker compose stop fakecam`, wait, and
+#   start it again to produce one on purpose (SPEC 8, 11).
 
 # 4 — WHEP negotiates. A bare POST only earns "invalid Content-Type", and
 #     OPTIONS returns 204 even for a path with no publisher, so neither proves
