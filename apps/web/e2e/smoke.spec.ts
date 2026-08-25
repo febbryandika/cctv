@@ -1,16 +1,13 @@
 import { expect, test } from '@playwright/test'
 
-test('the app shell renders and its nav links resolve', async ({ page }) => {
+// The authenticated walk through the nav returns in build order step 12, where
+// the harness already needs the API, Postgres and a seeded account — and where
+// e2e/.auth/ (already gitignored) holds the storage state.
+test('signed out, the app shell redirects to sign-in', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Live' })).toBeVisible()
 
-  for (const [label, heading] of [
-    ['Recordings', 'Recordings'],
-    ['Health', 'Health'],
-  ] as const) {
-    await page.getByRole('navigation').getByRole('link', { name: label }).click()
-    await expect(page.getByRole('heading', { name: heading })).toBeVisible()
-  }
+  await expect(page).toHaveURL(/\/sign-in$/)
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
 })
 
 test('sign-in renders outside the app shell, with no nav', async ({ page }) => {
