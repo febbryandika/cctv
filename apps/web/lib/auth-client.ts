@@ -1,3 +1,13 @@
-// TODO(SPEC 4.1): Better Auth browser client, pointed at the Hono API.
+import { createAuthClient } from 'better-auth/react'
+import { API_URL } from './api'
 
-export {}
+// The web app never holds a database credential (SPEC 15) — it talks to Hono,
+// and Hono talks to Postgres. baseURL is the API, not this app: Better Auth
+// appends /api/auth itself.
+//
+// credentials: 'include' is what carries the httpOnly session cookie across
+// the origin boundary; the API answers with Access-Control-Allow-Credentials.
+export const authClient = createAuthClient({
+  baseURL: API_URL,
+  fetchOptions: { credentials: 'include' },
+})

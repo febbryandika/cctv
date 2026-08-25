@@ -72,8 +72,22 @@ Ports are published to `127.0.0.1` only (SPEC 15). Postgres is on **5439**, not
 the pooled and unpooled hosts of one Neon branch, or both at the Compose
 Postgres. Mixing them — a Neon pooled URL for the app and a localhost direct
 URL for migrations — migrates one database while the app reads another, and
-neither side says a word. Four checks say the media layer is
-actually working, not merely running:
+neither side says a word.
+
+Sign in at <http://localhost:3000> with the account `bun run db:seed` creates
+and prints:
+
+```
+operator@ronda.local / ronda-operator
+```
+
+Override them with `SEED_OPERATOR_EMAIL` and `SEED_OPERATOR_PASSWORD` for
+anything that is not a local dummy install. **Sign-up is disabled** — there is
+one operator account and `seed` is the only thing that can create it, so
+`POST /api/auth/sign-up/email` answers `400 EMAIL_PASSWORD_SIGN_UP_DISABLED`.
+`seed` is idempotent; re-running it changes nothing.
+
+Four checks say the media layer is actually working, not merely running:
 
 ```bash
 # 1 — the stream plays
