@@ -53,10 +53,14 @@ services:
       - ./recordings:/recordings
 
   # Same engine and major version Neon runs, so migrations behave identically.
+  # This pin tracks Neon — check with `select version()` against the Neon
+  # branch and bump both together; a local 17 against a hosted 18 means a
+  # migration can pass here and fail there.
+  #
   # Development stays possible with no internet; point DATABASE_URL at Neon
   # when you want the hosted one (SPEC 5.1).
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ronda
@@ -68,7 +72,12 @@ services:
       # it belongs to another user — check with `netstat -an | grep 5432`.
       # DATABASE_URL in .env.example matches this.
       - '127.0.0.1:5439:5432'
-    volumes: [pgdata:/var/lib/postgresql/data]
+    # NOT /var/lib/postgresql/data. The 18+ images store data in a subdirectory
+    # of /var/lib/postgresql so that `pg_upgrade --link` does not straddle a
+    # mount boundary, and they refuse to start if the old path is mounted
+    # instead — "in 18+, these Docker images are configured to store database
+    # data in a ...". See docker-library/postgres#37.
+    volumes: [pgdata:/var/lib/postgresql]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ronda -d ronda']
       interval: 5s

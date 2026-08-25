@@ -66,7 +66,13 @@ HLS on, RTMP on, and nothing recorded.
 
 Ports are published to `127.0.0.1` only (SPEC 15). Postgres is on **5439**, not
 5432, because a natively-installed Postgres usually owns the standard port —
-`.env.example` already points at 5439. Four checks say the media layer is
+`.env.example` already points at 5439.
+
+`DATABASE_URL` and `DATABASE_URL_DIRECT` must point at the **same** database:
+the pooled and unpooled hosts of one Neon branch, or both at the Compose
+Postgres. Mixing them — a Neon pooled URL for the app and a localhost direct
+URL for migrations — migrates one database while the app reads another, and
+neither side says a word. Four checks say the media layer is
 actually working, not merely running:
 
 ```bash

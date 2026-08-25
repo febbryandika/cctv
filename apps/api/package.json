@@ -13,8 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "bun --env-file=../../.env src/db/seed.ts",
-    "doctor": "bun scripts/doctor.ts",
-    "measure": "bun scripts/measure.ts",
+    "doctor": "bun --env-file=../../.env scripts/doctor.ts",
+    "measure": "bun --env-file=../../.env scripts/measure.ts",
     "render:mediamtx": "bun --env-file=../../.env scripts/render-mediamtx.ts"
   },
   "dependencies": {
