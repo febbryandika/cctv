@@ -1,0 +1,50 @@
+# MediaMTX + Postgres + a fake camera (SPEC 7).
+#
+# Development cannot depend on a physical camera being powered on, and CI
+# certainly cannot. `docker compose stop fakecam` produces a real recording
+# gap, which is how the timeline gets tested without unplugging anything.
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    network_mode: host
+    environment:
+      # mediamtx.yml gives `yard` a pull source (the real camera), but the
+      # fakecam below PUBLISHES to that same path, and a path cannot do both.
+      # MediaMTX lets any config key be overridden by an MTX_-prefixed
+      # variable, so development flips the source without editing the file.
+      # Set MTX_PATHS_YARD_SOURCE to the camera URL in .env to pull instead.
+      MTX_PATHS_YARD_SOURCE: ${MTX_PATHS_YARD_SOURCE:-publisher}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+      - ./recordings:/recordings
+
+  # Same engine and major version Neon runs, so migrations behave identically.
+  # Development stays possible with no internet; point DATABASE_URL at Neon
+  # when you want the hosted one (SPEC 5.1).
+  postgres:
+    image: postgres:17-alpine
+    network_mode: host
+    environment:
+      POSTGRES_USER: ronda
+      POSTGRES_PASSWORD: ronda
+      POSTGRES_DB: ronda
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  # The fixture must already be H.264 so `-c copy` works — no transcode,
+  # negligible CPU, and the stream behaves like a real camera.
+  #
+  # TODO(build order step 1): apps/api/fixtures/yard-loop.mp4 does not exist
+  # yet, so this service will restart-loop until it is added.
+  fakecam:
+    image: linuxserver/ffmpeg:latest
+    network_mode: host
+    depends_on: [mediamtx]
+    restart: unless-stopped
+    volumes: [./apps/api/fixtures:/fixtures]
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp rtsp://127.0.0.1:8554/yard
+
+volumes:
+  pgdata:
