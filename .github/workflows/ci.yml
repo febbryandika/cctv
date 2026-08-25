@@ -45,6 +45,21 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+
+      # apps/web typechecks a type-only import of apps/api/src/index (SPEC 6).
+      # TypeScript pulls that file into THIS program — include/exclude only
+      # filter roots, transitive imports are compiled regardless — and then
+      # resolves its imports (hono, better-auth, drizzle-orm, zod) from
+      # apps/api/node_modules, which the pnpm install below does not create.
+      # Without this step both typechecks and `next build` fail with TS2307
+      # pointing at a file in the other app. This mirrors the documented local
+      # setup (SPEC 12), where both installs exist.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+        working-directory: apps/api
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm typecheck:tsc

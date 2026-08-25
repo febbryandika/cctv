@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { QueryProvider } from '@/components/query-provider'
 import { SignOutButton } from '@/components/sign-out-button'
 
 const NAV = [
@@ -32,7 +33,13 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{children}</main>
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
+        {/* Scoped to this group, not the root layout: /sign-in lives in (auth)
+            and queries nothing, so it stays free of an extra client boundary.
+            This layout stays a server component — a server layout may render a
+            client component and pass server-rendered children through it. */}
+        <QueryProvider>{children}</QueryProvider>
+      </main>
     </div>
   )
 }
