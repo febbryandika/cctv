@@ -49,9 +49,19 @@ camera (ONVIF/RTSP) → MediaMTX (loopback only) → Hono API (Bun) → Next.js 
 ```bash
 git clone <repo> && cd cctv
 cp .env.example .env                 # camera IP, ONVIF password, DATABASE_URL
+mkdir -p recordings                  # bind-mount target, owned by you not root
 docker compose up -d                 # MediaMTX + fake camera + postgres
 cd apps/api  && bun install && bun run db:migrate && bun run db:seed && bun dev
 cd apps/web  && pnpm install && pnpm dev
+```
+
+Ports are published to `127.0.0.1` only (SPEC 15). Postgres is on **5439**, not
+5432, because a natively-installed Postgres usually owns the standard port —
+`.env.example` already points at 5439. Check a live stream with:
+
+```bash
+ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/yard   # or open it in VLC
+curl -s http://127.0.0.1:9997/v3/paths/list              # MediaMTX control API
 ```
 
 `apps/web` installs with **pnpm**, `apps/api` with **Bun**. This is not a
