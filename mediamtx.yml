@@ -18,6 +18,15 @@ api: yes
 playback: yes
 hls: no # not used — see non-goals (SPEC 1.3)
 
+# TODO(build order step 2): SPEC 7 pins only the four TCP addresses above.
+# Verified against mediamtx v1.20.1: it ALSO starts RTMP on :1935, SRT on
+# :8890, MoQ on :8892-8893, RTSP UDP/RTP on :8000-8001 and WebRTC UDP/ICE on
+# :8189 — all on every interface, not loopback. None of those protocols are
+# used here, and SPEC 15 wants nothing reachable except through the
+# authenticated API. Disabling them follows the same pattern as `hls: no`,
+# but the WebRTC UDP/ICE port is load-bearing for live view (step 5), so the
+# change is left for whoever does that step rather than guessed at now.
+
 pathDefaults:
   recordFormat: fmp4
   recordPartDuration: 1s
