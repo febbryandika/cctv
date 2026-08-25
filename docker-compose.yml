@@ -8,6 +8,13 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:latest
     network_mode: host
+    environment:
+      # mediamtx.yml gives `yard` a pull source (the real camera), but the
+      # fakecam below PUBLISHES to that same path, and a path cannot do both.
+      # MediaMTX lets any config key be overridden by an MTX_-prefixed
+      # variable, so development flips the source without editing the file.
+      # Set MTX_PATHS_YARD_SOURCE to the camera URL in .env to pull instead.
+      MTX_PATHS_YARD_SOURCE: ${MTX_PATHS_YARD_SOURCE:-publisher}
     volumes:
       - ./mediamtx.yml:/mediamtx.yml
       - ./recordings:/recordings
@@ -28,8 +35,7 @@ services:
   # negligible CPU, and the stream behaves like a real camera.
   #
   # TODO(build order step 1): apps/api/fixtures/yard-loop.mp4 does not exist
-  # yet, so this service will restart-loop until it is added. See also the
-  # source/publisher note on the `yard` path in mediamtx.yml.
+  # yet, so this service will restart-loop until it is added.
   fakecam:
     image: linuxserver/ffmpeg:latest
     network_mode: host
