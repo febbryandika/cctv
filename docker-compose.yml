@@ -14,6 +14,22 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:latest
     restart: unless-stopped
+    # mediamtx.yml is GENERATED and gitignored (it embeds a password hash), so
+    # on a fresh clone it does not exist and Compose would helpfully create a
+    # DIRECTORY at that path — MediaMTX would then find no config and start on
+    # its defaults: HLS on, RTMP on, nothing recorded, nothing bound to
+    # loopback. Two guards, because neither is sufficient alone:
+    #
+    #   create_host_path: false  stops Compose creating the directory, so `up`
+    #     fails on the mount. Documented, but ignored by some backends
+    #     (docker/compose#13602), so it is the nice failure, not the guarantee.
+    #
+    #   command: ['/mediamtx.yml']  names the config explicitly. MediaMTX
+    #     tolerates a missing config only when no path is given; an explicit
+    #     path that cannot be read is fatal. That is the guarantee.
+    #
+    # Render it first:  cd apps/api && bun run render:mediamtx
+    command: ['/mediamtx.yml']
     environment:
       # mediamtx.yml gives `yard` a pull source (the real camera), but the
       # fakecam below PUBLISHES to that same path, and a path cannot do both.
@@ -28,7 +44,12 @@ services:
       - '127.0.0.1:9997:9997/tcp' # control API
       - '127.0.0.1:9996:9996/tcp' # playback API
     volumes:
-      - ./mediamtx.yml:/mediamtx.yml
+      - type: bind
+        source: ./mediamtx.yml
+        target: /mediamtx.yml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./recordings:/recordings
 
   # Same engine and major version Neon runs, so migrations behave identically.

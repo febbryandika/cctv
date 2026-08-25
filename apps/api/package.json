@@ -14,7 +14,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "bun --env-file=../../.env src/db/seed.ts",
     "doctor": "bun scripts/doctor.ts",
-    "measure": "bun scripts/measure.ts"
+    "measure": "bun scripts/measure.ts",
+    "render:mediamtx": "bun --env-file=../../.env scripts/render-mediamtx.ts"
   },
   "dependencies": {
     "@hono/zod-validator": "0.9.0",
