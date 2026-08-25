@@ -1,0 +1,51 @@
+# Ronda media pipeline (SPEC 7).
+#
+# MediaMTX owns the entire media path: it pulls RTSP from the camera, records
+# fMP4 segments to disk, serves WebRTC/WHEP for live, and stitches recorded
+# windows by wall-clock time. The application code owns only authentication,
+# timeline arithmetic, and honesty about what was actually recorded.
+
+logLevel: info
+
+# Bind everything to loopback. The Hono API is the only way in, so auth cannot
+# be bypassed by hitting a port directly (SPEC 15).
+rtspAddress: 127.0.0.1:8554
+webrtcAddress: 127.0.0.1:8889
+apiAddress: 127.0.0.1:9997
+playbackAddress: 127.0.0.1:9996
+
+api: yes
+playback: yes
+hls: no # not used — see non-goals (SPEC 1.3)
+
+pathDefaults:
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  # NOT the 1h default. MediaMTX's reported timespan durations can disagree
+  # with what is on disk, so shorter segments bound the error to ten minutes
+  # (SPEC 8, item 4).
+  recordSegmentDuration: 10m
+  recordDeleteAfter: 168h # 7 days
+
+paths:
+  # Main stream: high resolution, recorded continuously, never watched
+  # directly — so a viewer can never disturb the recording.
+  #
+  # TODO(build order step 1): this `source` pulls from the real camera, but
+  # docker-compose's `fakecam` PUBLISHES to rtsp://127.0.0.1:8554/yard. A path
+  # cannot both pull a source and accept a publisher. Decide before running
+  # Compose: `source: publisher` for the fake camera, or the URL below for the
+  # real one. SPEC 7 specifies the URL form and does not say how the two
+  # coexist, so this is deliberately left open rather than guessed at.
+  yard:
+    source: rtsp://192.168.1.50:5543/<md5-of-onvif-password>/live/channel0
+    sourceOnDemand: no # must record whether or not anyone is watching
+    record: yes
+    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+
+  # Sub-stream: low bitrate, H.264, pulled only while a browser is connected.
+  # Live view reads this, so watching costs almost nothing.
+  yard_sub:
+    source: rtsp://192.168.1.50:5543/<md5-of-onvif-password>/live/channel1
+    sourceOnDemand: yes
+    record: no

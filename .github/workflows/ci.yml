@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # A timezone bug that only appears in one zone is exactly the bug this
+        # catches (SPEC 8, item 3). Both zones must produce identical output.
+        tz: [UTC, Asia/Jakarta]
+    env:
+      TZ: ${{ matrix.tz }}
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      # Both compilers run: tsgo is the fast Go one, tsc is authoritative.
+      # Any divergence between them surfaces here rather than in an editor.
+      - run: bun run typecheck
+      - run: bun run typecheck:tsc
+      - run: bun run lint
+      - run: bun run test
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm typecheck:tsc
+      - run: pnpm lint
+      - run: pnpm build
+
+  # TODO(build order step 12): Playwright against Docker Compose, with TZ set
+  # explicitly. Needs the fake-camera fixture, so it waits for step 1.

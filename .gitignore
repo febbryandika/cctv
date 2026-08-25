@@ -46,6 +46,9 @@ coverage/
 # Drizzle / database tooling
 .drizzle/
 
+# Recorded video. MediaMTX writes ~27 GB/day here (SPEC 5.3); never tracked.
+/recordings/
+
 # Local database files
 *.sqlite
 *.sqlite3
