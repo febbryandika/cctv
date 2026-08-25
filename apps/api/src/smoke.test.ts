@@ -7,4 +7,14 @@ describe('api smoke', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
   })
+
+  // The only assertion that /cameras is mounted on the REAL app rather than on
+  // a test-local Hono, and it mocks nothing. Better Auth resolves a cookieless
+  // request to null without touching the database, so this needs no
+  // environment. If that ever regresses, weaken it to .not.toBe(404).
+  it('guards /cameras', async () => {
+    const res = await app.fetch(new Request('http://localhost/cameras'))
+
+    expect(res.status).toBe(401)
+  })
 })
