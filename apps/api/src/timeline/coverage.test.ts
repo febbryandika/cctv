@@ -5,6 +5,7 @@ import {
   gaps,
   inferCause,
   merge,
+  nearestSpan,
   resolve,
   TOLERANCE_MS,
   type Span,
@@ -362,6 +363,76 @@ describe('resolve', () => {
   })
 })
 
+describe('nearestSpan', () => {
+  const SPANS: Span[] = [
+    { start: BASE, end: BASE + 10 * MINUTE },
+    { start: BASE + 30 * MINUTE, end: BASE + 40 * MINUTE },
+  ]
+
+  it('returns null when there is no footage at all', () => {
+    expect(nearestSpan([], BASE)).toBeNull()
+  })
+
+  it('offers the span that ended just before the instant', () => {
+    expect(nearestSpan(SPANS, BASE + 11 * MINUTE)).toEqual(SPANS[0])
+  })
+
+  it('offers the span that starts just after the instant', () => {
+    expect(nearestSpan(SPANS, BASE + 29 * MINUTE)).toEqual(SPANS[1])
+  })
+
+  // The whole point of measuring to the nearer EDGE rather than to the start:
+  // an instant 20 seconds past the end of an hour-long span is 20 seconds from
+  // footage, and offering the span an hour ahead instead would be absurd.
+  it('measures to the nearer edge, not to the start', () => {
+    const spans: Span[] = [
+      { start: BASE, end: BASE + HOUR },
+      { start: BASE + HOUR + MINUTE, end: BASE + 2 * HOUR },
+    ]
+
+    expect(nearestSpan(spans, BASE + HOUR + 20 * SECOND)).toEqual(spans[0])
+  })
+
+  // A click dead centre in a gap has two equally near answers. Forward, because
+  // "resume from here" is what an operator scrubbing a timeline means.
+  it('breaks a tie in favour of the later span', () => {
+    expect(nearestSpan(SPANS, BASE + 20 * MINUTE)).toEqual(SPANS[1])
+  })
+
+  it('offers the only span when the instant is far outside every one', () => {
+    expect(nearestSpan(SPANS, BASE - 10 * HOUR)).toEqual(SPANS[0])
+    expect(nearestSpan(SPANS, BASE + 10 * HOUR)).toEqual(SPANS[1])
+  })
+
+  // Half-open, agreeing with resolve() and gaps(): the instant at a span's end
+  // is already the gap, and the span it just left is zero away.
+  it('treats a span end as zero distance from that span', () => {
+    expect(nearestSpan(SPANS, BASE + 10 * MINUTE)).toEqual(SPANS[0])
+  })
+
+  // Merged, so the caller cannot be offered "play from here" pointing at a
+  // fragment the timeline bar never drew.
+  it('merges before choosing, so a muxer boundary is never offered as a span', () => {
+    const spans: Span[] = [
+      { start: BASE, end: BASE + 10 * MINUTE },
+      { start: BASE + 10 * MINUTE + 400, end: BASE + 20 * MINUTE },
+    ]
+
+    expect(nearestSpan(spans, BASE + 30 * MINUTE)).toEqual({
+      start: BASE,
+      end: BASE + 20 * MINUTE,
+    })
+  })
+
+  it("does not mutate the caller's spans", () => {
+    const spans: Span[] = [{ start: BASE, end: BASE + 10 * MINUTE }]
+
+    nearestSpan(spans, BASE + HOUR)
+
+    expect(spans).toEqual([{ start: BASE, end: BASE + 10 * MINUTE }])
+  })
+})
+
 describe('inferCause', () => {
   const GAP: Span = { start: BASE + 10 * MINUTE, end: BASE + 20 * MINUTE }
 
@@ -468,6 +539,7 @@ describe('purity', () => {
     coverage(spans, WINDOW)
     clampToNow(spans, BASE + HOUR)
     resolve(spans, BASE + 5 * MINUTE)
+    nearestSpan(spans, BASE + 20 * MINUTE)
     inferCause({ start: BASE + 10 * MINUTE, end: BASE + 30 * MINUTE }, [])
 
     expect(nowSpy).not.toHaveBeenCalled()

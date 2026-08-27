@@ -83,6 +83,36 @@ export function resolve(spans: Span[], t: number): { spanIndex: number; offsetSe
   return null
 }
 
+// The other half of resolve(): when an instant lands in a gap, this is the span
+// the 409 offers instead (SPEC 4.5). Distance is measured to the nearer EDGE
+// rather than to the start, because an instant twenty seconds past the end of an
+// hour of footage is twenty seconds from footage, not an hour.
+//
+// Merges first, for the same reason resolve() does - the caller must only ever
+// be offered a span the timeline bar actually drew, never a fragment either side
+// of a muxer boundary.
+export function nearestSpan(spans: Span[], t: number): Span | null {
+  let nearest: Span | null = null
+  let distance = Infinity
+
+  for (const span of merge(spans)) {
+    // Zero when t is inside the span or exactly at its end; callers reach this
+    // only when resolve() already said gap, so that is a boundary case, not the
+    // normal one.
+    const away = t < span.start ? span.start - t : Math.max(0, t - span.end)
+
+    // <=, not <: merge() returns spans sorted by start, so an equal distance
+    // keeps the later one. A click dead centre in a gap resolves forward, which
+    // is what "resume from here" means to someone scrubbing a timeline.
+    if (away <= distance) {
+      nearest = span
+      distance = away
+    }
+  }
+
+  return nearest
+}
+
 // The poller only writes transitions, and only every 10s, so a `down` lands a
 // few seconds after the stream actually stopped - just inside the gap it
 // explains. A gap shorter than that interval closes before the poller can see

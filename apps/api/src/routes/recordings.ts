@@ -1,16 +1,20 @@
 import { and, desc, eq, gte, lt } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db } from '../db'
 import { cameras, streamEvents } from '../db/schema'
-import { listTimespans, MediaMtxError } from '../mediamtx/client'
+import { clipUrl, listTimespans, MediaMtxError } from '../mediamtx/client'
+import { rateLimit } from '../middleware/rate-limit'
 import { requireSession, type SessionEnv } from '../middleware/session'
 import {
+  clampToNow,
   coverage,
   gaps,
   inferCause,
   merge,
+  nearestSpan,
+  resolve,
   TOLERANCE_MS,
   type GapCause,
   type Span,
@@ -67,6 +71,40 @@ const timelineQuery = z
   // into null while the response type still claims number.
   .refine((w) => w.to > w.from, 'to must be after from')
   .refine((w) => w.to - w.from <= MAX_WINDOW_MS, 'window may not exceed 7 days')
+
+// SPEC 4.5 and 15: 300s by default, never more than an hour in one response.
+const DEFAULT_CLIP_SEC = 300
+const MAX_CLIP_SEC = 3_600
+
+// Same transform-then-refine order and the same NaN guard as timelineQuery.
+//
+// `duration` is coerced because a query string has no numbers, and .int() is
+// what makes "1.5" and "abc" 400s rather than something MediaMTX has to have an
+// opinion about. .default() applies before the rest of the chain runs, so an
+// absent parameter is 300 and not NaN.
+const clipQuery = z
+  .object({
+    start: z.iso.datetime({ offset: true }),
+    duration: z.coerce.number().int().positive().max(MAX_CLIP_SEC).default(DEFAULT_CLIP_SEC),
+  })
+  .transform(({ start, duration }) => ({ start: Date.parse(start), duration }))
+  .refine((q) => Number.isFinite(q.start), 'unparsable RFC3339 timestamp')
+
+// Allowlisted, never spread. MediaMTX answers /get with
+// `Access-Control-Allow-Origin: *`, and copying that onto a credentialed
+// response makes the browser reject it - the CORS middleware in index.ts is the
+// only thing that may set that header. `Server: mediamtx` would also announce
+// the media server to anyone reading response headers, which is the opposite of
+// what proxying it is for.
+//
+// content-range and accept-ranges are here for fidelity rather than because
+// MediaMTX sends them: it answers `Accept-Ranges: none` and ignores Range
+// entirely, so today it never returns a 206. That may change, and a proxy that
+// only forwards what today's upstream happens to send is one upstream release
+// away from breaking seeking with no error anywhere.
+const PASSTHROUGH_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges']
+
+export const clipRateLimit = rateLimit({ limit: 30, windowMs: 60_000 })
 
 async function findCamera(slug: string) {
   const [camera] = await db
@@ -212,66 +250,190 @@ function overshoot(raw: Span[], requested: Span, window: Span, now: number) {
   return { clamped: { spanCount: overshooting.length, excessSec: Math.round(excessMs / 1000) } }
 }
 
-export const recordingsRoute = new Hono<SessionEnv>().get(
-  '/:slug/timeline',
-  requireSession,
-  zValidator('param', slugParam, (result, c) =>
-    result.success ? undefined : c.json({ error: 'invalid_slug' }, 400),
-  ),
-  // The hook keeps the failure body in this codebase's { error } shape. Without
-  // it zValidator answers with zod's raw safeParse result, which is both a
-  // different contract from every other error here and a large $ZodError union
-  // dragged into AppType for every consumer of the typed client.
-  zValidator('query', timelineQuery, (result, c) =>
-    result.success ? undefined : c.json({ error: 'invalid_window' }, 400),
-  ),
-  async (c) => {
-    const { slug } = c.req.valid('param')
-    const { from, to } = c.req.valid('query')
-
-    // Read once and threaded, never called twice: two Date.now() calls a few
-    // milliseconds apart would clamp the spans against one instant and the
-    // window against another.
-    const now = Date.now()
-
-    // The window clamp below would collapse to nothing, and coverage() would
-    // divide by zero. Nothing has been recorded in a window that has not
-    // started yet, and saying so is more honest than answering 0%.
-    if (from >= now) return c.json({ error: 'window_in_future' }, 400)
-
-    if (!(await findCamera(slug))) return c.json({ error: 'unknown camera' }, 404)
-
-    let raw: Span[]
-    try {
-      raw = await listTimespans(slug)
-    } catch (error) {
-      // The playback API answers 400 - not 404 - both for a path it does not
-      // have configured and for one that has simply never recorded (verified
-      // against yard_sub, which returns "lstat /recordings/yard_sub: no such
-      // file or directory"). The slug has already been checked against our own
-      // cameras table by this point, so 400 here means "no footage on disk",
-      // which is honestly zero coverage and one window-length gap.
-      if (error instanceof MediaMtxError && error.status === 400) {
-        console.warn(`recordings: no recordings for ${slug} -`, error.message)
-        raw = []
-      } else {
-        // Anything else - unreachable, 5xx, a shape MediaMTX changed - is a
-        // failure to answer the question. Degrading THAT to an empty list
-        // would draw a broken media server as a total outage, which is the
-        // specific lie this endpoint exists to avoid.
-        console.error('recordings: timespan list failed -', error)
-        return c.json({ error: 'mediamtx_unreachable' }, 502)
-      }
+// Shared by both routes: the slug is ours, but the timespan list is MediaMTX's
+// and the two disagree in exactly one direction worth handling.
+async function loadTimespans(slug: string): Promise<Span[] | null> {
+  try {
+    return await listTimespans(slug)
+  } catch (error) {
+    // The playback API answers 400 - not 404 - both for a path it does not
+    // have configured and for one that has simply never recorded (verified
+    // against yard_sub, which returns "lstat /recordings/yard_sub: no such
+    // file or directory"). The slug has already been checked against our own
+    // cameras table by this point, so 400 here means "no footage on disk",
+    // which is honestly zero coverage and one window-length gap.
+    if (error instanceof MediaMtxError && error.status === 400) {
+      console.warn(`recordings: no recordings for ${slug} -`, error.message)
+      return []
     }
 
-    // No catch: Better Auth resolves the session against this same database, so
-    // a database that cannot be reached has already answered 401 upstream.
-    const events = await loadEvents(slug, from, to)
+    // Anything else - unreachable, 5xx, a shape MediaMTX changed - is a
+    // failure to answer the question. Degrading THAT to an empty list
+    // would draw a broken media server as a total outage, which is the
+    // specific lie this endpoint exists to avoid.
+    console.error('recordings: timespan list failed -', error)
+    return null
+  }
+}
 
-    // An operator refreshing to see whether a gap closed must not be handed the
-    // answer from before it closed.
-    c.header('Cache-Control', 'no-store')
+export const recordingsRoute = new Hono<SessionEnv>()
+  .get(
+    '/:slug/timeline',
+    requireSession,
+    zValidator('param', slugParam, (result, c) =>
+      result.success ? undefined : c.json({ error: 'invalid_slug' }, 400),
+    ),
+    // The hook keeps the failure body in this codebase's { error } shape. Without
+    // it zValidator answers with zod's raw safeParse result, which is both a
+    // different contract from every other error here and a large $ZodError union
+    // dragged into AppType for every consumer of the typed client.
+    zValidator('query', timelineQuery, (result, c) =>
+      result.success ? undefined : c.json({ error: 'invalid_window' }, 400),
+    ),
+    async (c) => {
+      const { slug } = c.req.valid('param')
+      const { from, to } = c.req.valid('query')
 
-    return c.json(buildTimeline(raw, events, { start: from, end: to }, now))
-  },
-)
+      // Read once and threaded, never called twice: two Date.now() calls a few
+      // milliseconds apart would clamp the spans against one instant and the
+      // window against another.
+      const now = Date.now()
+
+      // The window clamp below would collapse to nothing, and coverage() would
+      // divide by zero. Nothing has been recorded in a window that has not
+      // started yet, and saying so is more honest than answering 0%.
+      if (from >= now) return c.json({ error: 'window_in_future' }, 400)
+
+      if (!(await findCamera(slug))) return c.json({ error: 'unknown camera' }, 404)
+
+      const raw = await loadTimespans(slug)
+      if (raw === null) return c.json({ error: 'mediamtx_unreachable' }, 502)
+
+      // No catch: Better Auth resolves the session against this same database, so
+      // a database that cannot be reached has already answered 401 upstream.
+      const events = await loadEvents(slug, from, to)
+
+      // An operator refreshing to see whether a gap closed must not be handed the
+      // answer from before it closed.
+      c.header('Cache-Control', 'no-store')
+
+      return c.json(buildTimeline(raw, events, { start: from, end: to }, now))
+    },
+  )
+  // The clip proxy (docs/ARCHITECTURE.md#playback). MediaMTX cuts and stitches
+  // the window; this route decides who may ask for it, whether the footage
+  // exists, and moves the bytes without reading them.
+  .get(
+    '/:slug/clip',
+    // Order matters and is asserted: the guard first, so an unauthenticated
+    // flood is rejected before it can spend a real operator's budget, and the
+    // limiter before the validators, so a malformed request still costs a slot.
+    requireSession,
+    clipRateLimit,
+    zValidator('param', slugParam, (result, c) =>
+      result.success ? undefined : c.json({ error: 'invalid_slug' }, 400),
+    ),
+    zValidator('query', clipQuery, (result, c) =>
+      result.success ? undefined : c.json({ error: 'invalid_clip' }, 400),
+    ),
+    async (c) => {
+      const { slug } = c.req.valid('param')
+      const { start, duration } = c.req.valid('query')
+
+      const now = Date.now()
+
+      if (!(await findCamera(slug))) return c.json({ error: 'unknown camera' }, 404)
+
+      const raw = await loadTimespans(slug)
+      if (raw === null) return c.json({ error: 'mediamtx_unreachable' }, 502)
+
+      // Clamped and merged before anything is asked of it: the same list the
+      // timeline bar draws, so a click on green plays and a click on red does
+      // not. Without the clamp, MediaMTX's reported end for the segment it is
+      // still writing runs past the present and an instant that has not
+      // happened yet would resolve to playable footage.
+      const available = merge(clampToNow(raw, now))
+
+      // A start in the future needs no branch of its own - the clamp above has
+      // already removed everything it could have landed in, so it arrives here
+      // as what it is: an instant with no footage.
+      if (resolve(available, start) === null) return gap(c, available, start)
+
+      let upstream: Response
+      try {
+        // No timeout. fetchJson's 3s deadline is right for a JSON list and
+        // fatal here: it would guillotine the body of a long clip mid-stream.
+        // The client's own signal is forwarded instead, so closing the tab
+        // stops MediaMTX muxing rather than leaving it to finish an hour of
+        // video nobody is reading.
+        upstream = await fetch(clipUrl(slug, start, duration), {
+          headers: rangeHeader(c.req.header('range')),
+          signal: c.req.raw.signal,
+        })
+      } catch (error) {
+        // A viewer who navigated away is the normal case, not a failure worth
+        // a log line or a 502 nobody will read.
+        if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
+
+        console.error('recordings: clip fetch failed -', error)
+        return c.json({ error: 'mediamtx_unreachable' }, 502)
+      }
+
+      if (!upstream.ok) {
+        // Nothing here is a video, and an unread body holds the socket open.
+        await upstream.body?.cancel()
+
+        // Unlike /list, /get separates the two cases: 404 "no recording
+        // segments found" for an instant with no footage, 400 for a path it
+        // does not have. A 404 after the check above means the list this route
+        // read a moment ago no longer matches the disk - retention deleted the
+        // segment mid-request - so it is answered as what it is, a gap.
+        if (upstream.status === 404) return gap(c, available, start)
+
+        console.error(`recordings: clip rejected - HTTP ${upstream.status}`)
+        return c.json({ error: 'mediamtx_unreachable' }, 502)
+      }
+
+      // The body is handed over, never read. Buffering a 300s window works in
+      // development and falls over the first time somebody asks for an hour
+      // (docs/ARCHITECTURE.md#playback).
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: passthrough(upstream.headers),
+      })
+    },
+  )
+
+// Undefined rather than an empty object when the client sent no Range, so the
+// proxy adds no header of its own to a request that had none.
+const rangeHeader = (range: string | undefined) => (range ? { range } : undefined)
+
+function passthrough(from: Headers): Headers {
+  const headers = new Headers({ 'cache-control': 'no-store' })
+
+  for (const name of PASSTHROUGH_HEADERS) {
+    const value = from.get(name)
+    if (value !== null) headers.set(name, value)
+  }
+
+  return headers
+}
+
+// SPEC 4.5: an empty <video> with no explanation is the failure this answers.
+// 409 rather than 404 - the request was well formed and the camera exists,
+// there is simply nothing recorded at that instant - and it names the nearest
+// span so the UI has something to offer besides an apology.
+function gap(c: Context, available: Span[], start: number) {
+  const nearest = nearestSpan(available, start)
+
+  return c.json(
+    {
+      error: 'gap',
+      requested: iso(start),
+      nearest: nearest
+        ? { start: iso(nearest.start), end: iso(nearest.end), durationSec: durationSec(nearest) }
+        : null,
+    },
+    409,
+  )
+}

@@ -170,7 +170,15 @@ describe('listTimespans', () => {
 describe('clipUrl', () => {
   it('converts epoch ms back to RFC3339 at the wire boundary', () => {
     expect(clipUrl('yard', 1787663581029, 300)).toBe(
-      'http://127.0.0.1:9996/get?path=yard&start=2026-08-25T13%3A13%3A01.029Z&duration=300',
+      'http://127.0.0.1:9996/get?path=yard&start=2026-08-25T13%3A13%3A01.029Z&duration=300&format=mp4',
     )
+  })
+
+  // Asserted separately from the URL above because it is a decision, not a
+  // detail: the fmp4 default writes mvhd.duration = 0 and a <video> fed that
+  // never gets a usable scrubber. Dropping this parameter would leave playback
+  // working and seeking silently broken.
+  it('asks for mp4, so the moov carries a real duration and the clip can seek', () => {
+    expect(new URL(clipUrl('yard', 1787663581029, 300)).searchParams.get('format')).toBe('mp4')
   })
 })

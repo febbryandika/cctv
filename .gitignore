@@ -98,7 +98,11 @@ test-results/
 playwright-report/
 playwright/.cache/
 .playwright-mcp/
-e2e/.auth/
+# Leading ** on purpose: a pattern with a slash in it is anchored to this file's
+# directory, so a bare `e2e/.auth/` would only ever match one at the repo root -
+# never apps/web's, which is the only one that exists and which holds a live
+# session cookie.
+**/e2e/.auth/
 
 # Private project docs (planning, specs) are ignored, but the public
 # deliverables — README assets and the reference docs it links to — are tracked.

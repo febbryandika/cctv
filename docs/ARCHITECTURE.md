@@ -3,9 +3,10 @@
 Why Ronda is shaped the way it is. The README says what it does and how to run
 it; this says what was decided and what each decision cost.
 
-> **Status.** Live view works end to end: recording, the WHEP proxy, and the
-> player are built. The timeline, playback, health, and the measurement scripts
-> are designed but not yet implemented — the sections below say which is which.
+> **Status.** Live view and playback work end to end: recording, the WHEP proxy,
+> the live player, the timeline, and the clip proxy are built. Health and the
+> measurement scripts are designed but not yet implemented — the sections below
+> say which is which.
 
 ---
 
@@ -186,7 +187,7 @@ database credential — it talks to the API, the API talks to Postgres.
 | `GET` | `/health` | disk free, days remaining, 24h coverage |
 | `GET` | `/health/events` | SSE — status transitions as they happen |
 
-*`/recordings/:slug/clip` and `/health` are designed but not yet built.*
+*`/health` is designed but not yet built.*
 
 The web app builds a fully typed client from a **type-only** import of the API's
 `AppType`. Nothing crosses that boundary at runtime, but it does mean the web
@@ -267,8 +268,6 @@ list — not the bar — is the representation that survives without a pointer.
 
 ## Playback
 
-*Designed; not yet built.*
-
 Clicking a timeline position at wall-clock `t` requests a window, and the API
 proxies MediaMTX's playback endpoint. **MediaMTX does the stitching** — it
 concatenates across segment boundaries and cuts on wall-clock time, so the app
@@ -280,10 +279,58 @@ body must be **piped rather than buffered**. Reading the window into memory
 before responding works fine for five minutes of video in development and falls
 over the first time someone asks for an hour.
 
+Today that passthrough is fidelity rather than an active code path. MediaMTX's
+`/get` answers `Accept-Ranges: none` and ignores a `Range` header entirely, so
+it never returns a `206`. The proxy forwards the header up and mirrors whatever
+comes back regardless, and the tests drive a mocked `206` to prove it — a proxy
+that only forwards what today's upstream happens to send is one upstream release
+away from breaking seeking with nothing in any log.
+
+Response headers are **allowlisted, never copied wholesale**. MediaMTX answers
+`/get` with `Access-Control-Allow-Origin: *`, and a wildcard on a credentialed
+response is one the browser rejects outright; the CORS middleware is the only
+thing entitled to set that header.
+
+### fMP4 or MP4
+
+MediaMTX offers both, and the choice decides whether the native controls work.
+
+`fmp4` is the default and writes `mvhd.duration = 0` — a fragmented stream does
+not know its length up front. A `<video>` fed that reports a duration of
+`Infinity`, and its scrubber never becomes usable. Playback looks fine until
+somebody tries to seek.
+
+`mp4` builds the sample tables first, so the moov carries the real duration
+(measured: `10033` ms for a ten-second window) and seeking works with no custom
+scrubber and no player library. It costs nothing worth having: a 300-second
+window starts arriving in 0.59s, a 3600-second one in 1.18s. MediaMTX does hold
+those sample tables in memory while it muxes, which is part of what the
+3600-second bound on `duration` is protecting.
+
+So the proxy asks for `format=mp4`, and **the timeline's own player is a plain
+`<video controls>`** — no scrubber of our own, because there is nothing left for
+one to do.
+
 A request whose start lands in a gap returns `409` with the nearest available
-span, rather than an empty video element with no explanation. Window length is
-bounded, so the endpoint cannot be turned into a request for a week of video in
-one response.
+span, rather than an empty video element with no explanation. `nearest` measures
+to the closer *edge* of a span, not to its start: an instant twenty seconds past
+the end of an hour of footage is twenty seconds from footage. The web app
+reaches the same verdict from the spans the timeline already loaded, so the
+message appears with no round trip; the `409` remains the authority and is what
+any other client gets.
+
+Two smaller things the route inherits from MediaMTX. Its `/get` separates cases
+that `/list` does not — `404 no recording segments found` for an instant with no
+footage, `400` for a path it has never heard of — so a `404` here (retention
+deleting a segment mid-request) is answered as the gap it is, while a `400` is a
+`502`. And the `<video>` element must carry `crossOrigin="use-credentials"`: the
+API is a separate origin, and without it the element sends no session cookie,
+the route answers `401`, and the player shows an empty box with no error
+anywhere.
+
+Window length is bounded at an hour, and the route is rate limited to 30
+requests a minute per user — one clip can make MediaMTX mux an hour of video, so
+the bound is on work done upstream, not on bytes moved here.
 
 ## Measurement
 

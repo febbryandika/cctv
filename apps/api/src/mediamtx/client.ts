@@ -165,6 +165,23 @@ export async function listTimespans(path: string): Promise<Timespan[]> {
   }))
 }
 
+// `mp4`, not the `fmp4` default, and this is the whole reason the parameter is
+// spelled out rather than left off.
+//
+// Both formats answer `Content-Type: video/mp4`, but they differ in the one
+// field the player needs: fMP4 writes `mvhd.duration = 0`, because a fragmented
+// stream does not know its own length up front. A <video> fed that reports a
+// duration of Infinity and its native scrubber never becomes usable - and the
+// native controls are the whole playback UI in v1 (SPEC 4.5). The `mp4` muxer
+// builds the sample tables first, so the moov carries the real duration and
+// seeking works with no custom scrubber and no player library.
+//
+// Measured against the fake camera, it costs nothing to prefer: a 300s window
+// starts arriving in 0.59s, a 3600s one in 1.18s. MediaMTX does hold those
+// sample tables in memory while it muxes, which is what the 3600s bound on
+// `duration` (SPEC 15) is protecting.
+const CLIP_FORMAT = 'mp4'
+
 // The epoch-ms -> RFC3339 boundary, in the other direction: MediaMTX cuts on
 // wall-clock time and takes RFC3339, so the conversion happens here and not in
 // the caller. The clip route (build order 8) streams this URL rather than
@@ -175,6 +192,7 @@ export function clipUrl(path: string, startMs: number, durationSec: number): str
     path,
     start: new Date(startMs).toISOString(),
     duration: String(durationSec),
+    format: CLIP_FORMAT,
   })
 
   return `${PLAYBACK_URL}/get?${params}`
