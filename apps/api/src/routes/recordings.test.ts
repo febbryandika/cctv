@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MediaMtxError } from '../mediamtx/client'
 import type * as MediaMtxClient from '../mediamtx/client'
 import { TOLERANCE_MS, type Span, type StreamEvent } from '../timeline/coverage'
-import { buildTimeline, recordingsRoute } from './recordings'
+import { buildTimeline, clipRateLimit, recordingsRoute } from './recordings'
 
 // Same three mocks and the same reasons as cameras.test.ts, with one
 // difference: the MediaMTX client is spread from the real module rather than
@@ -628,6 +628,400 @@ describe('GET /recordings/:slug/timeline', () => {
     listTimespans.mockResolvedValue([{ start: DAY_START, end: DAY_END }])
 
     const body = await (await app.request(url(FROM, TO), signedIn)).text()
+
+    expect(body).not.toMatch(/rtsp/i)
+    expect(body).not.toMatch(/127\.0\.0\.1/)
+    expect(body).not.toMatch(/9996/)
+  })
+})
+
+// The clip route proxies a video body rather than a parsed JSON value, so this
+// block stubs global fetch the way live.test.ts does. Both idioms coexist: the
+// module mock above still supplies listTimespans, and only the /get hop below
+// goes through fetch.
+describe('GET /recordings/:slug/clip', () => {
+  const COVERED = '2026-08-25T09:00:00+07:00'
+  const COVERED_MS = Date.parse(COVERED)
+
+  // Two hours of footage with a one-hour hole in the middle of the day, so
+  // there is a covered instant, a gap, and a span either side of it.
+  const MORNING: Span = { start: DAY_START + 8 * HOUR, end: DAY_START + 10 * HOUR }
+  const AFTERNOON: Span = { start: DAY_START + 11 * HOUR, end: DAY_START + 13 * HOUR }
+
+  const clip = (start: string, query = '', slug = 'yard') =>
+    `/recordings/${slug}/clip?start=${encodeURIComponent(start)}${query}`
+
+  // A realistic /get answer: chunked video, no length, and the wildcard CORS
+  // header and Server banner MediaMTX really does send.
+  const mtxVideo = (body = 'fake-mp4-bytes') =>
+    new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'video/mp4',
+        'accept-ranges': 'none',
+        'access-control-allow-origin': '*',
+        server: 'mediamtx',
+      },
+    })
+
+  const mtxError = (status: number, error: string) =>
+    new Response(JSON.stringify({ status: 'error', error }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    // `queue` feeds one row set per select() call and shifts it off, so the
+    // outer beforeEach's single entry only survives one request. The rate-limit
+    // block makes thirty-one.
+    queue.length = 0
+    for (let i = 0; i < 40; i += 1) queue.push(CAMERA)
+
+    listTimespans.mockResolvedValue([MORNING, AFTERNOON])
+    clipRateLimit.reset()
+    fetchMock.mockReset().mockImplementation(() => Promise.resolve(mtxVideo()))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('streams a covered instant', async () => {
+    const res = await app.request(clip(COVERED), signedIn)
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('video/mp4')
+    expect(await res.text()).toBe('fake-mp4-bytes')
+  })
+
+  it('asks MediaMTX for the main path, never the sub-stream', async () => {
+    await app.request(clip(COVERED), signedIn)
+
+    const requested = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(requested.pathname).toBe('/get')
+    expect(requested.searchParams.get('path')).toBe('yard')
+    expect(requested.searchParams.get('start')).toBe(new Date(COVERED_MS).toISOString())
+  })
+
+  // The body must reach the client as a stream. Reading it here to assert on it
+  // would prove nothing, so this asserts the handler never read it: an upstream
+  // body that is still unlocked and undisturbed by the time the Response is
+  // built is one that was handed over rather than buffered.
+  it('pipes the body instead of buffering it', async () => {
+    const upstream = mtxVideo()
+    fetchMock.mockResolvedValue(upstream)
+
+    const res = await app.request(clip(COVERED), signedIn)
+
+    expect(upstream.bodyUsed).toBe(false)
+    expect(res.body).toBeInstanceOf(ReadableStream)
+  })
+
+  describe('range passthrough', () => {
+    it('forwards the client Range header upstream', async () => {
+      await app.request(clip(COVERED), {
+        headers: { ...signedIn.headers, range: 'bytes=100-199' },
+      })
+
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+      expect(new Headers(init.headers).get('range')).toBe('bytes=100-199')
+    })
+
+    it('sends no Range header when the client sent none', async () => {
+      await app.request(clip(COVERED), signedIn)
+
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+      expect(init.headers).toBeUndefined()
+    })
+
+    // MediaMTX answers `Accept-Ranges: none` and ignores Range today, so this
+    // drives a 206 that only a future MediaMTX would send. The point is that
+    // the hop is faithful, not that the hop is currently exercised.
+    it('survives a 206 with its status and range headers intact', async () => {
+      fetchMock.mockResolvedValue(
+        new Response('partial', {
+          status: 206,
+          headers: {
+            'content-type': 'video/mp4',
+            'content-range': 'bytes 100-199/4096',
+            'accept-ranges': 'bytes',
+            'content-length': '100',
+          },
+        }),
+      )
+
+      const res = await app.request(clip(COVERED), {
+        headers: { ...signedIn.headers, range: 'bytes=100-199' },
+      })
+
+      expect(res.status).toBe(206)
+      expect(res.headers.get('content-range')).toBe('bytes 100-199/4096')
+      expect(res.headers.get('accept-ranges')).toBe('bytes')
+      expect(res.headers.get('content-length')).toBe('100')
+    })
+
+    it('forwards Accept-Ranges: none rather than inventing seekability', async () => {
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.headers.get('accept-ranges')).toBe('none')
+    })
+  })
+
+  // Copying upstream headers wholesale would put `Access-Control-Allow-Origin:
+  // *` on a credentialed response, which the browser rejects outright - and the
+  // CORS middleware in index.ts is the only thing entitled to set it.
+  it('does not forward the MediaMTX CORS header or its Server banner', async () => {
+    const res = await app.request(clip(COVERED), signedIn)
+
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+    expect(res.headers.get('server')).toBeNull()
+    expect(res.headers.get('cache-control')).toBe('no-store')
+  })
+
+  describe('gaps', () => {
+    const IN_GAP = '2026-08-25T10:30:00+07:00'
+
+    it('answers 409 rather than an empty video', async () => {
+      const res = await app.request(clip(IN_GAP), signedIn)
+
+      expect(res.status).toBe(409)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('names the nearest span so the UI has something to offer', async () => {
+      const res = await app.request(clip(IN_GAP), signedIn)
+
+      expect(await res.json()).toEqual({
+        error: 'gap',
+        requested: new Date(Date.parse(IN_GAP)).toISOString(),
+        nearest: {
+          start: new Date(AFTERNOON.start).toISOString(),
+          end: new Date(AFTERNOON.end).toISOString(),
+          durationSec: 7200,
+        },
+      })
+    })
+
+    it('reports no nearest span when nothing was ever recorded', async () => {
+      listTimespans.mockResolvedValue([])
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ nearest: null })
+    })
+
+    // The instant at a span's end belongs to the gap after it, which is what
+    // gaps() and resolve() already agree on.
+    it('treats the exact end of a span as a gap', async () => {
+      const res = await app.request(clip(new Date(MORNING.end).toISOString()), signedIn)
+
+      expect(res.status).toBe(409)
+    })
+
+    // Nothing has been recorded in a second that has not happened. Without the
+    // clamp, MediaMTX's reported end for the segment it is still writing runs
+    // past the present and this would proxy a request for the future.
+    it('answers 409 for an instant that has not happened yet', async () => {
+      listTimespans.mockResolvedValue([{ start: DAY_START, end: SETTLED + HOUR }])
+
+      const res = await app.request(clip(new Date(SETTLED + 30 * MINUTE).toISOString()), signedIn)
+
+      expect(res.status).toBe(409)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    // Sub-TOLERANCE_MS muxer boundaries are not holes. A click landing in one
+    // must play, not 409.
+    it('plays an instant inside a muxer boundary', async () => {
+      listTimespans.mockResolvedValue([
+        { start: DAY_START + 8 * HOUR, end: DAY_START + 9 * HOUR },
+        { start: DAY_START + 9 * HOUR + 400, end: DAY_START + 10 * HOUR },
+      ])
+
+      const res = await app.request(
+        clip(new Date(DAY_START + 9 * HOUR + 200).toISOString()),
+        signedIn,
+      )
+
+      expect(res.status).toBe(200)
+    })
+  })
+
+  describe('validation', () => {
+    it('defaults duration to 300 seconds', async () => {
+      await app.request(clip(COVERED), signedIn)
+
+      const requested = new URL(String(fetchMock.mock.calls[0]?.[0]))
+      expect(requested.searchParams.get('duration')).toBe('300')
+    })
+
+    it('passes an explicit duration through', async () => {
+      await app.request(clip(COVERED, '&duration=60'), signedIn)
+
+      const requested = new URL(String(fetchMock.mock.calls[0]?.[0]))
+      expect(requested.searchParams.get('duration')).toBe('60')
+    })
+
+    // SPEC 15: the endpoint may not be turned into a request for a week of
+    // video in one response.
+    it('rejects a duration over an hour', async () => {
+      const res = await app.request(clip(COVERED, '&duration=3601'), signedIn)
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'invalid_clip' })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('accepts exactly an hour', async () => {
+      const res = await app.request(clip(COVERED, '&duration=3600'), signedIn)
+
+      expect(res.status).toBe(200)
+    })
+
+    it.each(['0', '-30', '1.5', 'abc', ''])('rejects duration=%s', async (duration) => {
+      const res = await app.request(clip(COVERED, `&duration=${duration}`), signedIn)
+
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects a start that is not RFC3339', async () => {
+      const res = await app.request(clip('25-08-2026 09:00'), signedIn)
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'invalid_clip' })
+    })
+
+    it('rejects a start with no offset', async () => {
+      const res = await app.request(clip('2026-08-25T09:00:00'), signedIn)
+
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects a slug that could not name a MediaMTX path', async () => {
+      const res = await app.request(clip(COVERED, '', 'Yard!'), signedIn)
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'invalid_slug' })
+    })
+  })
+
+  describe('failure modes', () => {
+    it('rejects a request with no session before doing any work', async () => {
+      getSession.mockResolvedValue(null)
+
+      const res = await app.request(clip(COVERED))
+
+      expect(res.status).toBe(401)
+      expect(select).not.toHaveBeenCalled()
+      expect(listTimespans).not.toHaveBeenCalled()
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('answers 401 rather than 400 for an unauthenticated malformed request', async () => {
+      getSession.mockResolvedValue(null)
+
+      const res = await app.request('/recordings/yard/clip')
+
+      expect(res.status).toBe(401)
+    })
+
+    it('answers 404 for a camera that is not ours', async () => {
+      queue.length = 0
+      queue.push([], [], [])
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(404)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('answers 502 when the timespan list cannot be read', async () => {
+      listTimespans.mockRejectedValue(new MediaMtxError('unreachable'))
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(502)
+    })
+
+    // /get separates the two cases where /list does not: 404 is "no segments
+    // there", 400 is "no such path". A 404 after this route already checked
+    // means retention deleted the segment mid-request, which is a gap.
+    it('turns an upstream 404 into a 409 with the nearest span', async () => {
+      fetchMock.mockResolvedValue(mtxError(404, 'no recording segments found'))
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({
+        nearest: { start: new Date(MORNING.start).toISOString() },
+      })
+    })
+
+    it('turns an upstream 400 into a 502', async () => {
+      fetchMock.mockResolvedValue(mtxError(400, "path 'yard' is not configured"))
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(502)
+    })
+
+    it('never answers a rejected upstream with its JSON body as video', async () => {
+      fetchMock.mockResolvedValue(mtxError(404, 'no recording segments found'))
+
+      const body = await (await app.request(clip(COVERED), signedIn)).text()
+
+      expect(body).not.toMatch(/no recording segments found/)
+    })
+
+    it('answers 502 when MediaMTX cannot be reached at all', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'))
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(502)
+    })
+  })
+
+  describe('the rate limit', () => {
+    // SPEC 15: 30 clip requests per minute per user. One clip makes MediaMTX
+    // mux up to an hour of video, so the bound is on work done upstream.
+    it('allows 30 requests a minute and refuses the 31st', async () => {
+      for (let i = 0; i < 30; i += 1) {
+        expect((await app.request(clip(COVERED), signedIn)).status).toBe(200)
+      }
+
+      const res = await app.request(clip(COVERED), signedIn)
+
+      expect(res.status).toBe(429)
+      expect(await res.json()).toEqual({ error: 'rate_limited' })
+    })
+
+    it('counts a request the validators rejected', async () => {
+      for (let i = 0; i < 30; i += 1) {
+        await app.request(clip(COVERED, '&duration=99999'), signedIn)
+      }
+
+      expect((await app.request(clip(COVERED), signedIn)).status).toBe(429)
+    })
+
+    it('does not limit the timeline route', async () => {
+      for (let i = 0; i < 31; i += 1) await app.request(clip(COVERED), signedIn)
+
+      queue.length = 0
+      queue.push(CAMERA, [], [])
+
+      expect((await app.request(url(FROM, TO), signedIn)).status).toBe(200)
+    })
+  })
+
+  // docs/ARCHITECTURE.md#the-trust-boundary. The 409 body is built from the
+  // same timespans whose `url` field points straight at the media server.
+  it('never leaks a MediaMTX address to the browser', async () => {
+    const body = await (await app.request(clip('2026-08-25T10:30:00+07:00'), signedIn)).text()
 
     expect(body).not.toMatch(/rtsp/i)
     expect(body).not.toMatch(/127\.0\.0\.1/)
