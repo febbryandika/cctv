@@ -18,6 +18,17 @@ describe('api smoke', () => {
     expect(res.status).toBe(401)
   })
 
+  // Deliberately query-less, which is the stronger assertion. It proves the
+  // route is mounted INSIDE the .route() chain (index.ts) and that
+  // requireSession runs before the validators - reverse that order and a
+  // request with no from/to answers 400 instead of 401. Nothing reaches
+  // MediaMTX or the database on this path.
+  it('guards the timeline', async () => {
+    const res = await app.fetch(new Request('http://localhost/recordings/yard/timeline'))
+
+    expect(res.status).toBe(401)
+  })
+
   // Likewise for the WHEP proxy: mounted on the real app, and closed. The
   // session guard runs before anything reaches MediaMTX, so this makes no
   // network call even though it names a real path
