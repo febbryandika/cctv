@@ -186,7 +186,7 @@ database credential — it talks to the API, the API talks to Postgres.
 | `GET` | `/health` | disk free, days remaining, 24h coverage |
 | `GET` | `/health/events` | SSE — status transitions as they happen |
 
-*`/recordings` and `/health` are designed but not yet built.*
+*`/recordings/:slug/clip` and `/health` are designed but not yet built.*
 
 The web app builds a fully typed client from a **type-only** import of the API's
 `AppType`. Nothing crosses that boundary at runtime, but it does mean the web
@@ -215,8 +215,6 @@ retention window deletes.
 
 ## Timeline, gaps, and coverage
 
-*Designed; lands with the timeline work.*
-
 The naive model — recordings are a continuous line, playback is an offset into
 it — is wrong in four ways, and each one is the interesting part.
 
@@ -237,15 +235,35 @@ it — is wrong in four ways, and each one is the interesting part.
    camera-local only at the render boundary. CI runs the suite under two
    timezones for exactly this reason.
 4. **Reported durations are not always trustworthy.** Mitigated structurally
-   with 10-minute segments, by clamping the currently-open span to now, and by
-   cross-checking reported durations against file sizes rather than hiding the
-   discrepancy.
+   with 10-minute segments, and by ending the window itself at `now` rather than
+   at the requested end — so the hours of today that have not happened yet are
+   not counted against coverage, and half a recorded hour cannot read as a fully
+   covered one. Where the reported durations still overrun the present, the
+   response says so in an optional `clamped` field instead of silently absorbing
+   it, and `measure` cross-checks durations against file sizes.
 
 **Gaps are first-class output.** The timeline response carries spans, gaps with
 an inferred cause, and a coverage fraction. Rendering a gap as continuous
 recording is the specific failure this project exists to avoid. A playback
 request landing inside a gap returns `409` with the nearest available span,
 never an empty video element.
+
+Three things follow from that in the rendering, and they are the reason the
+timeline bar is not just a list of coloured divs:
+
+- The bar's **background is the gap colour** and recorded spans are painted on
+  top. A hole too narrow to occupy a pixel then still shows as a hairline rather
+  than disappearing, which is the one way this bar may not fail.
+- **Hours that have not elapsed are a third state**, neither recorded nor gap.
+  Drawing the rest of today as a gap would report a multi-hour outage that never
+  happened — the same dishonesty as hiding a real one, pointed the other way.
+- **Coverage never prints as 100%** while a gap is listed. A two-second hole in
+  a day is 99.9977%, which rounds up at two decimals, and a perfect score beside
+  visible holes is precisely the contradiction the page exists to avoid.
+
+The gap list under the bar carries the same facts as the bar itself. Tooltips do
+not open on touch and a two-pixel sliver is not a screen-reader target, so the
+list — not the bar — is the representation that survives without a pointer.
 
 ## Playback
 
