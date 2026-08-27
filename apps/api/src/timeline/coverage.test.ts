@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clampToNow,
   coverage,
@@ -24,6 +24,15 @@ const HOUR = 3_600_000
 
 // One hour starting at BASE. Most gap cases are read against this.
 const WINDOW: Span = { start: BASE, end: BASE + HOUR }
+
+describe('TOLERANCE_MS', () => {
+  // The boundary tests below use the constant symbolically, so on their own they
+  // would happily test a 5-second tolerance. This is the line that has to change
+  // for that to happen, and SPEC 8 pins the value.
+  it('is two seconds', () => {
+    expect(TOLERANCE_MS).toBe(2_000)
+  })
+})
 
 describe('merge', () => {
   // The three tolerance cases are the reason this module is tested first. Too
@@ -96,9 +105,26 @@ describe('merge', () => {
     expect(merge([])).toEqual([])
   })
 
-  // merge() walks a copy and mutates only what it pushed. Mutating the caller's
-  // spans would corrupt the raw MediaMTX timespans every later call reads.
-  it('does not mutate its input', () => {
+  // Two separately-deletable copies guard the caller, and they fail differently.
+  // This one is `[...spans]` before .sort(): the input must be UNSORTED or an
+  // in-place sort leaves it looking untouched and the test proves nothing.
+  it('does not reorder the array it was given', () => {
+    const input = [
+      { start: BASE + HOUR, end: BASE + 2 * HOUR },
+      { start: BASE, end: BASE + MINUTE },
+    ]
+
+    merge(input)
+
+    expect(input).toEqual([
+      { start: BASE + HOUR, end: BASE + 2 * HOUR },
+      { start: BASE, end: BASE + MINUTE },
+    ])
+  })
+
+  // The other copy is `out.push({ ...cur })`, which keeps `last.end = ...` off
+  // the caller's objects. These spans merge, so the assignment actually runs.
+  it('does not write through to the spans it was given', () => {
     const input = [
       { start: BASE, end: BASE + MINUTE },
       { start: BASE + MINUTE + 500, end: BASE + 2 * MINUTE },
@@ -106,10 +132,19 @@ describe('merge', () => {
 
     merge(input)
 
-    expect(input).toEqual([
-      { start: BASE, end: BASE + MINUTE },
-      { start: BASE + MINUTE + 500, end: BASE + 2 * MINUTE },
-    ])
+    expect(input[0]).toEqual({ start: BASE, end: BASE + MINUTE })
+  })
+
+  // gaps, coverage and resolve each merge internally, so one request merges the
+  // same array up to three times. The rule that callers pass raw spans rests on
+  // this holding.
+  it('is idempotent', () => {
+    const spans = [
+      { start: BASE, end: BASE + 10 * MINUTE },
+      { start: BASE + 10 * MINUTE + 400, end: BASE + 20 * MINUTE },
+    ]
+
+    expect(merge(merge(spans))).toEqual(merge(spans))
   })
 })
 
@@ -152,6 +187,27 @@ describe('gaps', () => {
     ])
   })
 
+  // The most product-relevant assertion in the file: a 400ms muxer boundary is
+  // not a hole in the record. Reported as a gap, the timeline claims the camera
+  // dropped out when it never did.
+  it('does not split a gap at a muxer boundary', () => {
+    const result = gaps(
+      [
+        { start: BASE, end: BASE + 10 * MINUTE },
+        { start: BASE + 10 * MINUTE + 400, end: BASE + 20 * MINUTE },
+        { start: BASE + 35 * MINUTE, end: BASE + HOUR },
+      ],
+      WINDOW,
+    )
+
+    expect(result).toEqual([{ start: BASE + 20 * MINUTE, end: BASE + 35 * MINUTE }])
+  })
+
+  // Pinned deliberately: see the coverage NaN case below.
+  it('reports no gaps for a zero-length window', () => {
+    expect(gaps([{ start: BASE, end: BASE + HOUR }], { start: BASE, end: BASE })).toEqual([])
+  })
+
   it('ignores spans that fall entirely outside the window', () => {
     const result = gaps(
       [
@@ -179,6 +235,25 @@ describe('coverage', () => {
   it('reports the recorded fraction of a partly covered window', () => {
     expect(coverage([{ start: BASE, end: BASE + 45 * MINUTE }], WINDOW)).toBe(0.75)
   })
+
+  // TOLERANCE_MS expressed as the headline number: unmerged this reads
+  // 0.99977..., which would put a fake outage in the README.
+  it('counts a sub-tolerance boundary as recorded', () => {
+    const spans = [
+      { start: BASE, end: BASE + 10 * MINUTE },
+      { start: BASE + 10 * MINUTE + 400, end: BASE + 30 * MINUTE },
+    ]
+
+    expect(coverage(spans, { start: BASE, end: BASE + 30 * MINUTE })).toBe(1)
+  })
+
+  // Left unguarded on purpose. A zero-length window has no coverage, and every
+  // alternative fabricates a number for a question nobody asked. The timeline
+  // route (build order step 7) rejects to <= from with a 400 before this is
+  // reachable - this test is what makes that a contract rather than a comment.
+  it('is NaN for a zero-length window', () => {
+    expect(coverage([{ start: BASE, end: BASE + HOUR }], { start: BASE, end: BASE })).toBeNaN()
+  })
 })
 
 describe('clampToNow', () => {
@@ -200,6 +275,14 @@ describe('clampToNow', () => {
     const result = clampToNow([{ start: BASE + 2 * HOUR, end: BASE + 3 * HOUR }], BASE + HOUR)
 
     expect(result).toEqual([])
+  })
+
+  it('does not write through to the spans it was given', () => {
+    const input = [{ start: BASE, end: BASE + 2 * HOUR }]
+
+    clampToNow(input, BASE + MINUTE)
+
+    expect(input[0]).toEqual({ start: BASE, end: BASE + 2 * HOUR })
   })
 
   // The point of the clamp: without it, half an hour of recording reads as a
@@ -247,6 +330,21 @@ describe('resolve', () => {
 
     expect(resolve(spans, BASE)).toEqual({ spanIndex: 0, offsetSec: 0 })
     expect(resolve(spans, BASE + 10 * MINUTE)).toBeNull()
+  })
+
+  // t lands in the 400ms muxer hole itself. Without the internal merge this
+  // returns null and the clip route 409s a click on perfectly playable video.
+  // The .2 is the reason the offset keeps its fraction rather than flooring.
+  it('resolves an instant inside a muxer boundary rather than missing', () => {
+    const result = resolve(
+      [
+        { start: BASE, end: BASE + 10 * MINUTE },
+        { start: BASE + 10 * MINUTE + 400, end: BASE + 20 * MINUTE },
+      ],
+      BASE + 10 * MINUTE + 200,
+    )
+
+    expect(result).toEqual({ spanIndex: 0, offsetSec: 600.2 })
   })
 
   // The index is into the MERGED list - what the timeline bar actually draws -
@@ -345,5 +443,33 @@ describe('timezone', () => {
 
     // 12:00 Jakarta, one hour into the second span.
     expect(resolve(spans, 1787634000000)).toEqual({ spanIndex: 1, offsetSec: 3600 })
+  })
+})
+
+// The module's defining constraint, made executable instead of left to review.
+describe('purity', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // `now` is an argument on purpose: mediamtx/client.ts refuses to clamp the
+  // open span precisely because calling the clock there would put the boundary
+  // out of a test's reach. This fails the moment anything here defaults `now`
+  // internally, which is the one change that would quietly undo the phase.
+  it('never reads the clock', () => {
+    const spans = [
+      { start: BASE, end: BASE + 10 * MINUTE },
+      { start: BASE + 30 * MINUTE, end: BASE + 40 * MINUTE },
+    ]
+    const nowSpy = vi.spyOn(Date, 'now')
+
+    merge(spans)
+    gaps(spans, WINDOW)
+    coverage(spans, WINDOW)
+    clampToNow(spans, BASE + HOUR)
+    resolve(spans, BASE + 5 * MINUTE)
+    inferCause({ start: BASE + 10 * MINUTE, end: BASE + 30 * MINUTE }, [])
+
+    expect(nowSpy).not.toHaveBeenCalled()
   })
 })
