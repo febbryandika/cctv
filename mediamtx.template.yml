@@ -110,14 +110,24 @@ paths:
   # Sub-stream: low bitrate, H.264, pulled only while a browser is connected.
   # Live view reads this, so watching costs almost nothing.
   #
-  # sourceOnDemand keeps this quiet in development: with no real camera it is
-  # never dialled until something actually watches it, so it does not spam
-  # connection errors the way a `no` would.
+  # sourceOnDemand keeps this quiet in development: it is never dialled until
+  # something actually watches it, so it does not spam connection errors the way
+  # a `no` would.
   #
-  # Nothing publishes to yard_sub in development — fakecam only feeds `yard`.
-  # Build-order step 5 (live view) reads this path and will need its own dev
-  # source then; adding one now would be config no test in this phase can check.
+  # This source is a token, unlike `yard` above, because development has no
+  # camera to pull channel1 from and fakecam only feeds `yard`. It cannot be
+  # overridden the way `yard` is: an MTX_PATHS_* variable cannot address a path
+  # whose name contains an underscore, so MTX_PATHS_YARD_SUB_SOURCE is read as
+  # path `yard` key `sub_source` and silently dropped. The substitution is done
+  # by render-mediamtx.ts instead, which explains it at more length.
+  #
+  # Unset YARD_SUB_SOURCE renders exactly the line this replaced — the same
+  # camera URL as `yard` above, on channel1 instead of channel0. (Spelled out
+  # rather than written as a token: the renderer substitutes comments too, and
+  # repeating the hash here would put it in the generated file twice.)
+  # .env.example sets it to rtsp://localhost:8554/yard, so MediaMTX relays its
+  # own main path on demand and live view has something to show with no camera.
   yard_sub:
-    source: rtsp://${CAMERA_IP}:5543/${ONVIF_PASSWORD_MD5}/live/channel1
+    source: ${YARD_SUB_SOURCE}
     sourceOnDemand: yes
     record: no

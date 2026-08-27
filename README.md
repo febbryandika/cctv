@@ -26,8 +26,66 @@ camera (ONVIF/RTSP) → MediaMTX (loopback only) → Hono API (Bun) → Next.js 
 
 ## How live view works
 
-> **TODO:** WHEP in five lines, and why WebRTC over HLS (the latency floor is
-> 0.5s vs 8s).
+The browser cannot play RTSP — that is a protocol mismatch, not a library gap —
+so something has to translate. MediaMTX serves the camera over WebRTC, and the
+API brokers the handshake. WHEP, end to end:
+
+1. The browser creates an `RTCPeerConnection`, adds a `recvonly` video
+   transceiver, and generates an SDP offer.
+2. It `POST`s the offer to `/live/:slug/whep` as `application/sdp`.
+3. The API resolves `:slug` to that camera's **sub-stream**, forwards the offer
+   to MediaMTX, and returns the answer — with the `Location` header **rewritten
+   to point back at the API**.
+4. The browser attaches the remote track. From here media flows browser ↔
+   MediaMTX directly over ICE; only signalling ever goes through the API.
+5. On unmount or `pagehide`, a `DELETE` to that rewritten URL tears the session
+   down.
+
+### The `Location` header is the whole trick
+
+MediaMTX answers step 3 with a `Location` pointing at **itself**. Forward it
+unchanged and the browser sends its `PATCH` and `DELETE` straight to MediaMTX,
+bypassing the session check entirely — and because MediaMTX binds to `127.0.0.1`
+(SPEC 15), those requests simply fail. The stream dies after roughly ten seconds
+with nothing in any log you would think to open. Rewriting it to
+`/live/:slug/whep/:session` is a three-line change and the difference between a
+working player and an unexplainable one.
+
+Two smaller versions of the same failure sit next to it. `Location` and `ETag`
+are not CORS-safelisted, so the API has to name them in `Access-Control-Expose-Headers`
+or the browser reads `null` for the very header the proxy exists to rewrite. And
+WHEP session ids are mapped to the authenticated session that created them, so
+`PATCH` and `DELETE` verify ownership rather than trusting an opaque id from the
+wire.
+
+The test for all of this is a clock: **if live view is still playing after thirty
+seconds, the rewrite is correct.** Ten seconds is what a bypassed session buys
+you.
+
+### Why WebRTC and not HLS
+
+Latency, and it is not close. WebRTC holds sub-second glass-to-glass; HLS floors
+at roughly 8 seconds because it is a playlist of segments and the player needs
+several of them buffered before it starts. For recorded playback that is
+irrelevant. For a camera it is the entire point — 8 seconds late is a different
+product, and no amount of tuning closes that gap because the segmenting *is* the
+protocol.
+
+So there is no HLS fallback (SPEC 1.3). A second player path would double the
+surface to test in exchange for a latency profile nobody wants on a live camera,
+and WebRTC covers every browser this targets.
+
+### Why live view reads the sub-stream
+
+Each camera is two MediaMTX paths: `yard` — high resolution, recorded
+continuously, `sourceOnDemand: no` — and `yard_sub` — low bitrate, H.264, pulled
+only while someone is watching, never recorded.
+
+Live view reads `yard_sub`, so watching costs almost nothing and **a viewer can
+never disturb the recording** (SPEC 7). That is enforced by the API rather than
+asked of the client: `/live/yard/whep` resolves to `yard_sub`, and
+`/live/yard_sub/whep` is an unknown camera. There is no request shape that
+reaches the recorded path.
 
 ## How playback works
 
@@ -109,8 +167,10 @@ curl -s 'http://127.0.0.1:9996/list?path=yard'
 
 # 4 — WHEP negotiates. A bare POST only earns "invalid Content-Type", and
 #     OPTIONS returns 204 even for a path with no publisher, so neither proves
-#     anything. A real SDP offer does: 201 plus the Location header the API
-#     will later have to rewrite (SPEC 9). The half-open session expires on
+#     anything. A real SDP offer does: 201 plus a Location header. This talks
+#     to MediaMTX directly, so the Location below is the raw one pointing at
+#     itself — the API rewrites it before a browser ever sees it, which is the
+#     point of "How live view works" above. The half-open session expires on
 #     its own; nothing to clean up.
 printf 'v=0\no=- 0 0 IN IP4 0.0.0.0\ns=-\nt=0 0\nm=video 9 UDP/TLS/RTP/SAVPF 96\na=ice-ufrag:x\na=ice-pwd:xxxxxxxxxxxxxxxxxxxxxx\na=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\na=setup:actpass\na=mid:0\na=recvonly\na=rtcp-mux\na=rtpmap:96 H264/90000\n' \
   | curl -sD- -o/dev/null -X POST -H 'Content-Type: application/sdp' \

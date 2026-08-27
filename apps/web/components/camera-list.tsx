@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { LivePlayer } from '@/components/live-player'
 import { api, type CameraStatus } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -85,10 +86,11 @@ function CameraCard({ camera }: { camera: CameraStatus }) {
         </CardAction>
       </CardHeader>
       <CardContent>
-        {/* TODO(SPEC 9, build order 5): WHEP player against `${camera.slug}_sub`. */}
-        <div className="bg-muted ring-foreground/10 flex aspect-video items-center justify-center rounded-lg ring-1">
-          <p className="text-muted-foreground text-xs">Player lands with the WHEP proxy</p>
-        </div>
+        {/* Mounted whatever the badge says. The player reports the connection it
+            actually has, which is a fresher and more honest fact than a status
+            poll that can be up to ten seconds stale. The bare slug goes in: the
+            API resolves it to the sub-stream (SPEC 7). */}
+        <LivePlayer slug={camera.slug} />
       </CardContent>
     </Card>
   )
