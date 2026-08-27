@@ -14,12 +14,14 @@ export function joinStatus(rows: CameraRow[], paths: MediaMtxPath[] | null) {
 
   return {
     // "this camera is down" and "we could not tell" are different facts, and
-    // saying which is the entire point of this project (SPEC 4.4, 14). Both
+    // saying which is the entire point of this project
+    // (docs/ARCHITECTURE.md#timeline-gaps-and-coverage, #observability). Both
     // still render offline.
     mediamtx: paths === null ? ('down' as const) : ('up' as const),
 
     // Disabled cameras are returned, not filtered. A camera that silently
-    // vanishes from the list is exactly the kind of quiet lie SPEC 4.4 is about.
+    // vanishes from the list is exactly the kind of quiet lie the timeline
+    // (docs/ARCHITECTURE.md#timeline-gaps-and-coverage) is about.
     cameras: rows.map((row) => {
       // The camera row's slug IS the MediaMTX path name, and it is the MAIN
       // recorded path. Not <slug>_sub: the sub-stream is sourceOnDemand, so it
@@ -38,10 +40,11 @@ export function joinStatus(rows: CameraRow[], paths: MediaMtxPath[] | null) {
         name: row.name,
         enabled: row.enabled,
         online,
-        // Epoch ms UTC (SPEC 8.3). Returned but not rendered yet: formatting it
-        // means camera-local time and the web app has no camera timezone, so
-        // browser-local formatting would plant a timezone bug in exactly the
-        // place SPEC 8 warns about.
+        // Epoch ms UTC (docs/ARCHITECTURE.md#timeline-gaps-and-coverage).
+        // Returned but not rendered yet: formatting it means camera-local time
+        // and the web app has no camera timezone, so browser-local formatting
+        // would plant a timezone bug in exactly the place that section warns
+        // about.
         readyAt: online ? (path?.readyTime ?? null) : null,
       }
     }),
@@ -50,9 +53,10 @@ export function joinStatus(rows: CameraRow[], paths: MediaMtxPath[] | null) {
 
 export const camerasRoute = new Hono<SessionEnv>().get('/', requireSession, async (c) => {
   // Columns named one by one, not select(): rtsp_main and rtsp_sub contain
-  // md5(ONVIF_PASSWORD) (SPEC 15), so a select() here would put a password hash
-  // one JSON.stringify away from the browser. Naming them keeps the secret
-  // inside Postgres rather than trusting a later hand-written projection.
+  // md5(ONVIF_PASSWORD) (docs/ARCHITECTURE.md#the-trust-boundary), so a
+  // select() here would put a password hash one JSON.stringify away from the
+  // browser. Naming them keeps the secret inside Postgres rather than trusting
+  // a later hand-written projection.
   const rows = await db
     .select({ slug: cameras.slug, name: cameras.name, enabled: cameras.enabled })
     .from(cameras)

@@ -17,8 +17,9 @@ import { createId } from '@paralleldrive/cuid2'
 // alone, so anything not reachable from it is absent from the migration.
 export * from './auth-schema'
 
-// There is deliberately NO segments table (SPEC 1.3). The filesystem plus
-// MediaMTX's /list is the source of truth for what was recorded; a second
+// There is deliberately NO segments table
+// (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do). The filesystem
+// plus MediaMTX's /list is the source of truth for what was recorded; a second
 // index drifts the first time a file is deleted out-of-band, and a timeline
 // that disagrees with the disk is worse than no timeline.
 

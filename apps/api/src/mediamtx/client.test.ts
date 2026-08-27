@@ -84,7 +84,8 @@ describe('listPaths', () => {
     await listPaths()
 
     // /v3/config/paths/list returns the configured RTSP source, which contains
-    // md5(ONVIF_PASSWORD) (SPEC 15). This assertion is the guard.
+    // md5(ONVIF_PASSWORD) (docs/ARCHITECTURE.md#the-trust-boundary). This
+    // assertion is the guard.
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:9997/v3/paths/list')
   })
 

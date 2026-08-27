@@ -1,14 +1,15 @@
-# MediaMTX + Postgres + a fake camera (SPEC 7).
+# MediaMTX + Postgres + a fake camera (docs/ARCHITECTURE.md#the-media-pipeline).
 #
 # Development cannot depend on a physical camera being powered on, and CI
 # certainly cannot. `docker compose stop fakecam` produces a real recording
 # gap, which is how the timeline gets tested without unplugging anything.
 #
-# SPEC 7 uses `network_mode: host`. That only works on Linux — on macOS and
-# Windows the container shares the Docker VM's network namespace, not the
-# host's, so every port binds somewhere the developer's machine cannot reach.
-# Ports are published explicitly instead, each one to 127.0.0.1 so the SPEC 15
-# loopback guarantee is preserved rather than merely relocated.
+# The obvious setup is `network_mode: host`. That only works on Linux — on
+# macOS and Windows the container shares the Docker VM's network namespace, not
+# the host's, so every port binds somewhere the developer's machine cannot
+# reach. Ports are published explicitly instead, each one to 127.0.0.1 so the
+# loopback guarantee (docs/ARCHITECTURE.md#the-trust-boundary) is preserved
+# rather than merely relocated.
 
 services:
   mediamtx:
@@ -57,8 +58,8 @@ services:
   # branch and bump both together; a local 17 against a hosted 18 means a
   # migration can pass here and fail there.
   #
-  # Development stays possible with no internet; point DATABASE_URL at Neon
-  # when you want the hosted one (SPEC 5.1).
+  # Development stays possible with no internet; point DATABASE_URL at Neon when
+  # you want the hosted one (docs/ARCHITECTURE.md#data).
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped

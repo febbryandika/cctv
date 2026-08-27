@@ -1,8 +1,9 @@
 import { z } from 'zod'
 
-// Both loopback (SPEC 15): the authenticated API is the only way to reach a
-// stream. The defaults match .env.example so `bun run test` — which loads no
-// env file — resolves the same URLs as `bun dev`.
+// Both loopback (docs/ARCHITECTURE.md#the-trust-boundary): the authenticated
+// API is the only way to reach a stream. The defaults match .env.example so
+// `bun run test` — which loads no env file — resolves the same URLs as
+// `bun dev`.
 //
 // process.env, not Bun.env, and global fetch, not Bun's: apps/web typechecks a
 // type-only import of ../index, which pulls this file into ITS program, and
@@ -27,7 +28,8 @@ export class MediaMtxError extends Error {
   }
 }
 
-// The RFC3339 -> epoch-ms boundary (SPEC 8.3), and the only one. MediaMTX
+// The RFC3339 -> epoch-ms boundary
+// (docs/ARCHITECTURE.md#timeline-gaps-and-coverage), and the only one. MediaMTX
 // speaks RFC3339; everything inside this process is epoch milliseconds UTC and
 // nothing downstream ever sees a Date.
 //
@@ -84,7 +86,8 @@ const timespanSchema = z.object({
 export type MediaMtxPath = z.infer<typeof pathSchema>
 
 // duration is folded into `end` here rather than downstream: seconds are a
-// wire-format detail, and timeline/ must only ever see epoch-ms spans (SPEC 8.3).
+// wire-format detail, and timeline/ must only ever see epoch-ms spans
+// (docs/ARCHITECTURE.md#timeline-gaps-and-coverage).
 export type Timespan = { start: number; end: number }
 
 async function fetchJson(url: string): Promise<unknown> {
@@ -123,7 +126,8 @@ function parse<S extends z.ZodType>(schema: S, value: unknown, url: string): z.i
 // Runtime state, NOT /v3/config/paths/list. The config endpoint returns the
 // CONFIGURED source, which for a real camera is
 // rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0 — proxying it would ship
-// a password hash to the browser (SPEC 15). This endpoint carries no secret.
+// a password hash to the browser (docs/ARCHITECTURE.md#the-trust-boundary).
+// This endpoint carries no secret.
 export async function listPaths(): Promise<MediaMtxPath[]> {
   const url = `${CONTROL_URL}/v3/paths/list`
   return parse(pathListSchema, await fetchJson(url), url).items
@@ -148,7 +152,8 @@ export async function getPath(name: string): Promise<MediaMtxPath | null> {
 }
 
 // The open span is deliberately NOT clamped to now here — that is timeline/
-// work (SPEC 8, item 4), and calling Date.now() would make this untestable.
+// work (docs/ARCHITECTURE.md#timeline-gaps-and-coverage, item 4), and calling
+// Date.now() would make this untestable.
 export async function listTimespans(path: string): Promise<Timespan[]> {
   const url = `${PLAYBACK_URL}/list?path=${encodeURIComponent(path)}`
 
@@ -163,7 +168,8 @@ export async function listTimespans(path: string): Promise<Timespan[]> {
 // The epoch-ms -> RFC3339 boundary, in the other direction: MediaMTX cuts on
 // wall-clock time and takes RFC3339, so the conversion happens here and not in
 // the caller. The clip route (build order 8) streams this URL rather than
-// buffering it (SPEC 9); it is never handed to the browser.
+// buffering it (docs/ARCHITECTURE.md#playback); it is never handed to the
+// browser.
 export function clipUrl(path: string, startMs: number, durationSec: number): string {
   const params = new URLSearchParams({
     path,

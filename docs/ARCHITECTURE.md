@@ -169,6 +169,31 @@ it is part of WHEP.
 Media itself does **not** flow through the proxy: the browser talks to MediaMTX
 directly over ICE. Only signalling is brokered.
 
+## The API surface
+
+Every route is session-guarded and validates its input. The web app holds no
+database credential — it talks to the API, the API talks to Postgres.
+
+| Method | Path | |
+|---|---|---|
+| `ALL` | `/api/auth/*` | Better Auth |
+| `GET` | `/cameras` | cameras plus current live status |
+| `POST` | `/live/:slug/whep` | SDP offer to answer; `Location` rewritten |
+| `PATCH` | `/live/:slug/whep/:session` | trickle ICE |
+| `DELETE` | `/live/:slug/whep/:session` | tear the session down |
+| `GET` | `/recordings/:slug/timeline` | spans, gaps, coverage for a window |
+| `GET` | `/recordings/:slug/clip` | proxied playback window, `Range`-aware |
+| `GET` | `/health` | disk free, days remaining, 24h coverage |
+| `GET` | `/health/events` | SSE — status transitions as they happen |
+
+*`/recordings` and `/health` are designed but not yet built.*
+
+The web app builds a fully typed client from a **type-only** import of the API's
+`AppType`. Nothing crosses that boundary at runtime, but it does mean the web
+app's typecheck reads the API's source — so anything reachable from `AppType`
+must stay runtime-agnostic (`process.env` and global `fetch`, never `Bun.*`), or
+the web build fails while pointing at an API file.
+
 ## Data
 
 Postgres via Drizzle, over TCP with `postgres.js` — the API is a long-lived
@@ -221,6 +246,66 @@ an inferred cause, and a coverage fraction. Rendering a gap as continuous
 recording is the specific failure this project exists to avoid. A playback
 request landing inside a gap returns `409` with the nearest available span,
 never an empty video element.
+
+## Playback
+
+*Designed; not yet built.*
+
+Clicking a timeline position at wall-clock `t` requests a window, and the API
+proxies MediaMTX's playback endpoint. **MediaMTX does the stitching** — it
+concatenates across segment boundaries and cuts on wall-clock time, so the app
+never opens a video file.
+
+The proxy has one requirement that is easy to get wrong: `Range`,
+`Content-Range`, `Accept-Ranges`, and `206` all have to survive the hop, and the
+body must be **piped rather than buffered**. Reading the window into memory
+before responding works fine for five minutes of video in development and falls
+over the first time someone asks for an hour.
+
+A request whose start lands in a gap returns `409` with the nearest available
+span, rather than an empty video element with no explanation. Window length is
+bounded, so the endpoint cannot be turned into a request for a week of video in
+one response.
+
+## Measurement
+
+*Designed; not yet built.*
+
+The thing that separates this from a tutorial: the system reports how well it
+actually worked, and the number goes in the README.
+
+- **`doctor`** runs once at setup. It probes both RTSP URLs and prints codec,
+  resolution, framerate, and measured bitrate, then makes three calls: warn if
+  the main stream is H.265, because those recordings will not play in most
+  browsers; warn if the sub-stream is missing or not H.264, because live view
+  would need transcoding this project does not do; and project GB/day and
+  days-until-full against actual free disk. A retention setting nobody checked
+  against a real bitrate is a guess.
+- **`measure`** reports coverage, storage, and time-to-first-frame over the last
+  24 hours — including the discrepancy between reported timespan durations and
+  on-disk file sizes, rather than hiding it.
+
+Both need a real camera and real elapsed time, so they stay manual and out of
+CI. They exist to answer one question honestly — *did this thing actually record
+last night?* — and to replace an adjective in the README with a number.
+
+## Observability
+
+No Prometheus, no Grafana; one camera does not need a metrics stack.
+
+- **`stream_events`** is the audit trail. Every up/down transition with a
+  timestamp is what turns an anonymous hole in the timeline into "the camera
+  rebooted at 03:14".
+- **`daily_coverage`** is the long memory. Recordings are deleted after the
+  retention window; the record of how reliable the system was should outlive
+  them.
+- **`/health/events`** pushes transitions to the health page over SSE, so a
+  watching operator sees a drop when it happens rather than at the next refresh.
+
+Two things are worth watching: **coverage trending down**, which means something
+is failing intermittently and nobody has noticed, and **bytes/hour trending up**,
+which means the bitrate drifted and retention will be shorter than configured.
+Both are visible without opening a log.
 
 ## Testing
 

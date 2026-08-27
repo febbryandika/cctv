@@ -1,3 +1,4 @@
-// TODO(SPEC 6): GET /health and GET /health/events (SSE)
+// TODO(docs/ARCHITECTURE.md#the-api-surface): GET /health and GET
+// /health/events (SSE)
 
 export {}

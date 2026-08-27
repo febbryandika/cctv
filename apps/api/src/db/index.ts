@@ -3,7 +3,8 @@ import { drizzle } from 'drizzle-orm/postgres-js'
 import * as schema from './schema'
 
 // Pooled connection string — the host contains `-pooler` (PgBouncer) on Neon.
-// Migrations use DATABASE_URL_DIRECT instead; see drizzle.config.ts (SPEC 5.2).
+// Migrations use DATABASE_URL_DIRECT instead; see drizzle.config.ts
+// (docs/ARCHITECTURE.md#data).
 //
 // idle_timeout matters far more than it looks. Neon's Free plan scales a
 // compute to zero after 5 minutes of inactivity and does not let you turn

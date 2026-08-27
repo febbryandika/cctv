@@ -20,7 +20,8 @@ describe('api smoke', () => {
 
   // Likewise for the WHEP proxy: mounted on the real app, and closed. The
   // session guard runs before anything reaches MediaMTX, so this makes no
-  // network call even though it names a real path (SPEC 15).
+  // network call even though it names a real path
+  // (docs/ARCHITECTURE.md#the-trust-boundary).
   it('guards the WHEP proxy', async () => {
     const res = await app.fetch(
       new Request('http://localhost/live/yard/whep', {
