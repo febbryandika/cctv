@@ -50,10 +50,30 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
+const onvifPasswordMd5 = new Bun.CryptoHasher('md5').update(onvifPassword).digest('hex')
+
+// The sub-stream source is a token rather than a literal because development has
+// no camera to pull channel1 from, and MediaMTX cannot be told otherwise: an
+// MTX_PATHS_* override cannot address a path whose name contains an underscore
+// (it splits the name on `_`), so MTX_PATHS_YARD_SUB_SOURCE is parsed as path
+// `yard` key `sub_source`, silently discarded with no warning. Verified against
+// v1.20.1: an equivalent `yardsub` path takes the override and `yard_sub` does
+// not, and neither `__` nor lowercase escapes it.
+//
+// So the substitution happens here instead. Unset means the real camera, which
+// is what an existing .env renders — byte-identically to before this token
+// existed. .env.example sets it to rtsp://localhost:8554/yard, which makes
+// MediaMTX relay its own `yard` path on demand: no second ffmpeg, and
+// sourceOnDemand still holds, so the sub-stream is dialled only while a browser
+// is actually watching.
+const yardSubSource =
+  Bun.env.YARD_SUB_SOURCE || `rtsp://${cameraIp}:5543/${onvifPasswordMd5}/live/channel1`
+
 const vars: Record<string, string> = {
   CAMERA_IP: cameraIp,
   // Lowercase hex, per SPEC 7.
-  ONVIF_PASSWORD_MD5: new Bun.CryptoHasher('md5').update(onvifPassword).digest('hex'),
+  ONVIF_PASSWORD_MD5: onvifPasswordMd5,
+  YARD_SUB_SOURCE: yardSubSource,
 }
 
 const template = await Bun.file(TEMPLATE).text()
@@ -88,6 +108,9 @@ if (current === rendered) {
 }
 
 // Masked, like `doctor` (SPEC 10, 15): enough to confirm the IP and the shape,
-// never the hash.
-console.log(`  yard      rtsp://${cameraIp}:5543/${'•'.repeat(8)}/live/channel0`)
-console.log(`  yard_sub  rtsp://${cameraIp}:5543/${'•'.repeat(8)}/live/channel1`)
+// never the hash. The mask is a regex rather than a fixed string because
+// yard_sub's source is now configurable and may or may not embed the hash.
+const mask = (url: string) => url.replace(/[0-9a-f]{32}/g, '•'.repeat(8))
+
+console.log(`  yard      ${mask(`rtsp://${cameraIp}:5543/${onvifPasswordMd5}/live/channel0`)}`)
+console.log(`  yard_sub  ${mask(yardSubSource)}`)
