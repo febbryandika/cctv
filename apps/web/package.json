@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "next typegen && tsgo --noEmit",
     "typecheck:tsc": "next typegen && tsc --noEmit",
     "test:e2e": "playwright test"
