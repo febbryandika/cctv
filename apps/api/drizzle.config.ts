@@ -12,9 +12,9 @@ process.loadEnvFile(new URL('../../.env', import.meta.url).pathname)
 
 // Migrations use the DIRECT (unpooled) connection string: PgBouncer in
 // transaction mode does not support the session-level statements drizzle-kit
-// issues. See SPEC 5.2. Both URLs must point at the SAME database — a pooled
-// URL on Neon and a direct URL on localhost silently migrates one database
-// while the app reads another.
+// issues. See docs/ARCHITECTURE.md#data. Both URLs must point at the SAME
+// database — a pooled URL on Neon and a direct URL on localhost silently
+// migrates one database while the app reads another.
 export default defineConfig({
   dialect: 'postgresql',
   schema: './src/db/schema.ts',

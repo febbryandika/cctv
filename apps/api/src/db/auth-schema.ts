@@ -9,8 +9,9 @@
 // either way — but `.defaultNow()` on a `timestamp without time zone` stores
 // the DATABASE SERVER's local clock and is then read back as if it were UTC.
 // Under this project's TZ=Asia/Jakarta that is a silent 7-hour error in
-// created_at/updated_at, and SPEC 5.3 is explicit: timestamptz, never
-// timestamp. Re-apply this after any regeneration.
+// created_at/updated_at, and the rule (docs/ARCHITECTURE.md#data) is
+// explicit: timestamptz, never timestamp. Re-apply this after any
+// regeneration.
 //
 // Everything else is CLI output — do not hand-edit it. Add columns by
 // configuring src/auth.ts and regenerating.

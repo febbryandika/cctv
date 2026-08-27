@@ -32,7 +32,8 @@ const OPERATOR = {
   session: { id: 's1', userId: 'u1', token: 'tok' },
 }
 // A second sign-in by the same human is still a different session, which is the
-// granularity SPEC 15 asks for ("mapped to the session that created them").
+// granularity docs/ARCHITECTURE.md#the-trust-boundary asks for: WHEP
+// session ids map to the session that created them.
 const OTHER = { user: OPERATOR.user, session: { id: 's2', userId: 'u1', token: 'tok2' } }
 
 const signedIn = { headers: { cookie: 'better-auth.session_token=abc' } }
@@ -89,9 +90,10 @@ describe('POST /live/:slug/whep', () => {
     expect(await res.text()).toBe(ANSWER)
   })
 
-  // SPEC 9 in one assertion. If any MediaMTX-shaped URL survives into the
-  // response, the browser sends PATCH/DELETE to a loopback-bound server, the
-  // session check is bypassed, and the stream dies after ~10s in silence.
+  // The docs/ARCHITECTURE.md#the-whep-proxy failure in one assertion. If any
+  // MediaMTX-shaped URL survives into the response, the browser sends
+  // PATCH/DELETE to a loopback-bound server, the session check is bypassed, and
+  // the stream dies after ~10s in silence.
   it('leaks no MediaMTX address to the browser', async () => {
     const res = await app.request('/live/yard/whep', offer())
     const serialized = JSON.stringify([...res.headers.entries()]) + (await res.text())
@@ -106,8 +108,9 @@ describe('POST /live/:slug/whep', () => {
     expect(res.headers.get('etag')).toBe('*')
   })
 
-  // SPEC 7: watching must never disturb the recording, so the recorded path is
-  // not merely discouraged — it is unreachable.
+  // docs/ARCHITECTURE.md#the-media-pipeline: watching must never disturb the
+  // recording, so the recorded path is not merely discouraged — it is
+  // unreachable.
   it('asks MediaMTX for the sub-stream, never the recorded path', async () => {
     await app.request('/live/yard/whep', offer())
 
@@ -206,7 +209,8 @@ describe('PATCH /live/:slug/whep/:session', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  // SPEC 15: one operator cannot steer another's session by guessing its id.
+  // docs/ARCHITECTURE.md#the-trust-boundary: one operator cannot steer
+  // another's session by guessing its id.
   it('404s a session owned by a different auth session', async () => {
     const id = await createSession(OPERATOR)
     getSession.mockResolvedValue(OTHER)

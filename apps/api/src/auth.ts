@@ -19,10 +19,10 @@ export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: 'pg', schema }),
   emailAndPassword: {
     enabled: true,
-    // Sign-up is disabled (SPEC 4.1, 15): the single operator account comes
-    // from `bun run db:seed`. This is the library refusing the request —
-    // POST /api/auth/sign-up/email returns 400 EMAIL_PASSWORD_SIGN_UP_DISABLED
-    // — rather than a route we forgot to mount.
+    // Sign-up is disabled (docs/ARCHITECTURE.md#the-trust-boundary): the single
+    // operator account comes from `bun run db:seed`. This is the library
+    // refusing the request — POST /api/auth/sign-up/email returns 400
+    // EMAIL_PASSWORD_SIGN_UP_DISABLED — rather than a route we forgot to mount.
     disableSignUp: true,
   },
   trustedOrigins: WEB_ORIGINS,

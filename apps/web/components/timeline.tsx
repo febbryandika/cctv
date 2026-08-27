@@ -1,3 +1,4 @@
-// TODO(SPEC 4.4): spans, gaps and scrub. A gap must never render as continuous recording.
+// TODO(docs/ARCHITECTURE.md#timeline-gaps-and-coverage): spans, gaps and scrub.
+// A gap must never render as continuous recording.
 
 export {}

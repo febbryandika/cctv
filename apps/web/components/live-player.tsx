@@ -12,10 +12,10 @@ const MESSAGE: Record<Exclude<Status, 'live'>, string> = {
   error: 'Live view failed. Reload the page to try again.',
 }
 
-// A cap, not a deadline. There is no STUN or TURN here — SPEC 1.3 cuts remote
-// access entirely, so the only candidates are host candidates and gathering
-// finishes in milliseconds. Whatever has been gathered by then is what gets
-// sent.
+// A cap, not a deadline. There is no STUN or TURN here —
+// docs/ARCHITECTURE.md#what-this-deliberately-does-not-do cuts remote access
+// entirely, so the only candidates are host candidates and gathering finishes
+// in milliseconds. Whatever has been gathered by then is what gets sent.
 const ICE_GATHER_TIMEOUT_MS = 1_000
 
 function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number) {
@@ -36,18 +36,20 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number) {
   })
 }
 
-// WHEP against the proxy, never against MediaMTX (SPEC 9, 15): the media server
-// is loopback-bound and unauthenticated, so the only URL this component may ever
-// hold is one on the API.
+// WHEP against the proxy, never against MediaMTX
+// (docs/ARCHITECTURE.md#the-whep-proxy, #the-trust-boundary): the media server
+// is loopback-bound and unauthenticated, so the only URL this component may
+// ever hold is one on the API.
 //
 // `slug` is the camera, not the MediaMTX path — the API resolves it to the
 // sub-stream itself, so live view cannot be pointed at the recorded path
-// (SPEC 7).
+// (docs/ARCHITECTURE.md#the-media-pipeline).
 //
-// The offer is sent complete rather than trickled. SPEC 4.2 describes trickle,
-// and the proxy implements PATCH for it, but with host candidates only there is
-// nothing to trickle: gathering beats the round-trip, so waiting for it costs
-// nothing and removes both the SDP-fragment builder and the ETag exchange.
+// The offer is sent complete rather than trickled. The WHEP flow describes
+// trickle, and the proxy implements PATCH for it, but with host candidates only
+// there is nothing to trickle: gathering beats the round-trip, so waiting for
+// it costs nothing and removes both the SDP-fragment builder and the ETag
+// exchange.
 export function LivePlayer({ slug }: { slug: string }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('connecting')
@@ -70,9 +72,7 @@ export function LivePlayer({ slug }: { slug: string }) {
       // keepalive so it outlives the navigation that triggered it. Best effort
       // by nature: a cross-origin DELETE needs a preflight that may not finish
       // during unload, and the session is reaped either way.
-      void fetch(url, { method: 'DELETE', credentials: 'include', keepalive: true }).catch(
-        () => {},
-      )
+      void fetch(url, { method: 'DELETE', credentials: 'include', keepalive: true }).catch(() => {})
     }
 
     pc.addEventListener('track', (event) => {
@@ -123,7 +123,8 @@ export function LivePlayer({ slug }: { slug: string }) {
       if (!res.ok) throw new Error(`WHEP POST responded ${res.status}`)
       if (location === null) {
         // The API rewrites this header; if it is unreadable here the cause is
-        // almost always CORS exposeHeaders rather than the proxy (SPEC 9).
+        // almost always CORS exposeHeaders rather than the proxy
+        // (docs/ARCHITECTURE.md#the-whep-proxy).
         throw new Error('WHEP: no readable Location header')
       }
 

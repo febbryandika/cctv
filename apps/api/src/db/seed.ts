@@ -1,4 +1,5 @@
-// Creates the single operator account and the one camera row (SPEC 4.1, 5.3).
+// Creates the single operator account and the one camera row
+// (docs/ARCHITECTURE.md#the-trust-boundary, #data).
 //
 //   cd apps/api && bun run db:seed
 //
@@ -36,8 +37,9 @@ if (missing.length > 0) {
 }
 
 // The BARDI-family path is rtsp://<ip>:5543/<md5(onvif_password)>/live/channelN
-// (SPEC 7). mediamtx.template.yml is the source of truth for that shape; this
-// builds the same URL so the row and the recorder agree.
+// (docs/ARCHITECTURE.md#the-media-pipeline). mediamtx.template.yml is the
+// source of truth for that shape; this builds the same URL so the row and the
+// recorder agree.
 const hash = new Bun.CryptoHasher('md5').update(onvifPassword).digest('hex')
 const rtsp = (channel: 0 | 1) => `rtsp://${cameraIp}:5543/${hash}/live/channel${channel}`
 
@@ -90,8 +92,9 @@ console.log(camera ? "seed: camera 'yard' created" : "seed: camera 'yard' alread
 
 await sql.end()
 
-// Masked, like doctor and render:mediamtx (SPEC 10, 15): the path IS the
-// password's MD5, so printing it leaks a password hash.
+// Masked, like doctor and render:mediamtx (docs/ARCHITECTURE.md#measurement,
+// #the-trust-boundary): the path IS the password's MD5, so printing it leaks a
+// password hash.
 console.log('')
 console.log('  operator  ' + email)
 console.log('  password  ' + password)

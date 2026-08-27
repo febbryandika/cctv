@@ -6,8 +6,9 @@ import { authClient } from '@/lib/auth-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
-// Sign-up is disabled (SPEC 4.1): there is one operator account and it comes
-// from `bun run db:seed`, so there is nothing to link to from here.
+// Sign-up is disabled (docs/ARCHITECTURE.md#the-trust-boundary): there is one
+// operator account and it comes from `bun run db:seed`, so there is nothing to
+// link to from here.
 export default function SignInPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')

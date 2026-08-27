@@ -1,8 +1,10 @@
-// Renders mediamtx.yml from mediamtx.template.yml (SPEC 7).
+// Renders mediamtx.yml from mediamtx.template.yml
+// (docs/ARCHITECTURE.md#the-media-pipeline).
 //
-// The BARDI-family RTSP path is rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0,
-// so the rendered config contains a password hash (SPEC 15). That is why
-// mediamtx.yml is generated and gitignored while the template is tracked:
+// The BARDI-family RTSP path is
+// rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0, so the rendered config
+// contains a password hash (docs/ARCHITECTURE.md#the-trust-boundary). That is
+// why mediamtx.yml is generated and gitignored while the template is tracked:
 // nothing that embeds the hash is ever committable.
 //
 //   cd apps/api && bun run render:mediamtx
@@ -19,7 +21,8 @@ const BANNER = `# GENERATED FILE — DO NOT EDIT, DO NOT COMMIT.
 #     cd apps/api && bun run render:mediamtx
 #
 # This file embeds md5(ONVIF_PASSWORD), so a leaked copy leaks a password hash
-# (SPEC 15) — hence gitignored. Edit the template and re-render; anything
+# (docs/ARCHITECTURE.md#the-trust-boundary) — hence gitignored. Edit the
+# template and re-render; anything
 # changed here is lost on the next run. Re-render after editing CAMERA_IP or
 # ONVIF_PASSWORD in .env.
 
@@ -71,7 +74,7 @@ const yardSubSource =
 
 const vars: Record<string, string> = {
   CAMERA_IP: cameraIp,
-  // Lowercase hex, per SPEC 7.
+  // Lowercase hex (docs/ARCHITECTURE.md#the-media-pipeline).
   ONVIF_PASSWORD_MD5: onvifPasswordMd5,
   YARD_SUB_SOURCE: yardSubSource,
 }
@@ -107,9 +110,10 @@ if (current === rendered) {
   console.log('mediamtx.yml: written from mediamtx.template.yml')
 }
 
-// Masked, like `doctor` (SPEC 10, 15): enough to confirm the IP and the shape,
-// never the hash. The mask is a regex rather than a fixed string because
-// yard_sub's source is now configurable and may or may not embed the hash.
+// Masked, like `doctor` (docs/ARCHITECTURE.md#measurement,
+// #the-trust-boundary): enough to confirm the IP and the shape, never the hash.
+// The mask is a regex rather than a fixed string because yard_sub's source is
+// now configurable and may or may not embed the hash.
 const mask = (url: string) => url.replace(/[0-9a-f]{32}/g, '•'.repeat(8))
 
 console.log(`  yard      ${mask(`rtsp://${cameraIp}:5543/${onvifPasswordMd5}/live/channel0`)}`)

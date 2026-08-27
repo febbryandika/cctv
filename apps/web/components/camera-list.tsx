@@ -15,10 +15,11 @@ import { LivePlayer } from '@/components/live-player'
 import { api, type CameraStatus } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
-// This is a status light, not a stream — the picture arrives over WHEP (SPEC 9)
-// — so polling only has to be fast enough that an operator notices a drop.
-// refetchIntervalInBackground stays off (the default), so a hidden tab stops
-// polling instead of hammering the API all night.
+// This is a status light, not a stream — the picture arrives over WHEP
+// (docs/ARCHITECTURE.md#the-whep-proxy) — so polling only has to be fast enough
+// that an operator notices a drop. refetchIntervalInBackground stays off (the
+// default), so a hidden tab stops polling instead of hammering the API all
+// night.
 const REFETCH_MS = 10_000
 
 export function CameraList() {
@@ -89,7 +90,8 @@ function CameraCard({ camera }: { camera: CameraStatus }) {
         {/* Mounted whatever the badge says. The player reports the connection it
             actually has, which is a fresher and more honest fact than a status
             poll that can be up to ten seconds stale. The bare slug goes in: the
-            API resolves it to the sub-stream (SPEC 7). */}
+            API resolves it to the sub-stream
+            (docs/ARCHITECTURE.md#the-media-pipeline). */}
         <LivePlayer slug={camera.slug} />
       </CardContent>
     </Card>

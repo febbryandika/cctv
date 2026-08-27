@@ -46,10 +46,10 @@ API brokers the handshake. WHEP, end to end:
 MediaMTX answers step 3 with a `Location` pointing at **itself**. Forward it
 unchanged and the browser sends its `PATCH` and `DELETE` straight to MediaMTX,
 bypassing the session check entirely — and because MediaMTX binds to `127.0.0.1`
-(SPEC 15), those requests simply fail. The stream dies after roughly ten seconds
-with nothing in any log you would think to open. Rewriting it to
-`/live/:slug/whep/:session` is a three-line change and the difference between a
-working player and an unexplainable one.
+([why](docs/ARCHITECTURE.md#the-trust-boundary)), those requests simply fail. The
+stream dies after roughly ten seconds with nothing in any log you would think to
+open. Rewriting it to `/live/:slug/whep/:session` is a three-line change and the
+difference between a working player and an unexplainable one.
 
 Two smaller versions of the same failure sit next to it. `Location` and `ETag`
 are not CORS-safelisted, so the API has to name them in `Access-Control-Expose-Headers`
@@ -71,9 +71,10 @@ irrelevant. For a camera it is the entire point — 8 seconds late is a differen
 product, and no amount of tuning closes that gap because the segmenting *is* the
 protocol.
 
-So there is no HLS fallback (SPEC 1.3). A second player path would double the
-surface to test in exchange for a latency profile nobody wants on a live camera,
-and WebRTC covers every browser this targets.
+So there is no HLS fallback — and [what else was
+cut](docs/ARCHITECTURE.md#what-this-deliberately-does-not-do). A second player
+path would double the surface to test in exchange for a latency profile nobody
+wants on a live camera, and WebRTC covers every browser this targets.
 
 ### Why live view reads the sub-stream
 
@@ -82,8 +83,9 @@ continuously, `sourceOnDemand: no` — and `yard_sub` — low bitrate, H.264, pu
 only while someone is watching, never recorded.
 
 Live view reads `yard_sub`, so watching costs almost nothing and **a viewer can
-never disturb the recording** (SPEC 7). That is enforced by the API rather than
-asked of the client: `/live/yard/whep` resolves to `yard_sub`, and
+never disturb the recording** ([the two
+paths](docs/ARCHITECTURE.md#the-media-pipeline)). That is enforced by the API
+rather than asked of the client: `/live/yard/whep` resolves to `yard_sub`, and
 `/live/yard_sub/whep` is an unknown camera. There is no request shape that
 reaches the recorded path.
 
@@ -117,12 +119,14 @@ cd apps/web  && pnpm install && pnpm dev
 `mediamtx.yml` is **generated** from the tracked `mediamtx.template.yml` and is
 not itself tracked: the camera's RTSP path is
 `rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0`, so committing the config
-would commit a password hash (SPEC 15). Re-run the render step after changing
-`CAMERA_IP` or `ONVIF_PASSWORD`. If the file is missing, `docker compose up`
-fails rather than starting MediaMTX on its defaults — which would quietly mean
-HLS on, RTMP on, and nothing recorded.
+would commit a password hash
+([why](docs/ARCHITECTURE.md#the-trust-boundary)). Re-run the render step after
+changing `CAMERA_IP` or `ONVIF_PASSWORD`. If the file is missing,
+`docker compose up` fails rather than starting MediaMTX on its defaults — which
+would quietly mean HLS on, RTMP on, and nothing recorded.
 
-Ports are published to `127.0.0.1` only (SPEC 15). Postgres is on **5439**, not
+Ports are published to `127.0.0.1` only ([the trust
+boundary](docs/ARCHITECTURE.md#the-trust-boundary)). Postgres is on **5439**, not
 5432, because a natively-installed Postgres usually owns the standard port —
 `.env.example` already points at 5439.
 
@@ -163,7 +167,8 @@ curl -s 'http://127.0.0.1:9996/list?path=yard'
 #    {"start":"2026-08-25T12:32:10.898156Z","duration":618.53,"url":"..."}]
 #   Two timespans means a recording gap between them; contiguous 10-minute
 #   segments are merged into one. `docker compose stop fakecam`, wait, and
-#   start it again to produce one on purpose (SPEC 8, 11).
+#   start it again to produce one on purpose — see "Timeline, gaps, and
+#   coverage" in docs/ARCHITECTURE.md.
 
 # 4 — WHEP negotiates. A bare POST only earns "invalid Content-Type", and
 #     OPTIONS returns 204 even for a path with no publisher, so neither proves

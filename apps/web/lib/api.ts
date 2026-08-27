@@ -3,8 +3,9 @@ import type { AppType } from '../../api/src/index'
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
-// Type-only across the app boundary (SPEC 6): nothing from apps/api crosses at
-// runtime, and the web app never holds a database credential (SPEC 15).
+// Type-only across the app boundary (docs/ARCHITECTURE.md#the-api-surface):
+// nothing from apps/api crosses at runtime, and the web app never holds a
+// database credential (docs/ARCHITECTURE.md#the-trust-boundary).
 //
 // It does mean this app's typecheck reads apps/api/src, so apps/api's
 // dependencies must be installed for `pnpm typecheck` and `pnpm build` — see

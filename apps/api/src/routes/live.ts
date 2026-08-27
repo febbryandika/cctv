@@ -6,7 +6,8 @@ import { db } from '../db'
 import { cameras } from '../db/schema'
 import { requireSession, type SessionEnv } from '../middleware/session'
 
-// Loopback, like the control and playback APIs (SPEC 15). The default must match
+// Loopback, like the control and playback APIs
+// (docs/ARCHITECTURE.md#the-trust-boundary). The default must match
 // .env.example because `bun test` loads no env file. process.env and global
 // fetch, never Bun.*: apps/web pulls this file into its TypeScript program via
 // the type-only AppType import and has no @types/bun.
@@ -25,8 +26,9 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 type WhepSession = { authSessionId: string; slug: string; createdAt: number }
 
 // Module-level, which is half the reason this API is its own long-lived process
-// (SPEC 2.3). Deliberately not a table: SPEC 5 has no place for it and a WHEP
-// session is meaningless across a restart.
+// (docs/ARCHITECTURE.md#why-a-separate-api-server). Deliberately not a table:
+// the schema (docs/ARCHITECTURE.md#data) has no place for it and a WHEP session
+// is meaningless across a restart.
 const whepSessions = new Map<string, WhepSession>()
 
 function sweepExpired(now: number) {
@@ -36,20 +38,21 @@ function sweepExpired(now: number) {
 }
 
 // MediaMTX answers with a RELATIVE Location — `/yard_sub/whep/<uuid>` — so the
-// id is the last segment. Exported because this is the SPEC 9 bug in one
-// function: forward MediaMTX's header unchanged and the browser sends PATCH and
-// DELETE straight to a loopback-bound server, bypassing the session check, and
-// the stream dies after ~10s with nothing in any log.
+// id is the last segment. Exported because this is the
+// docs/ARCHITECTURE.md#the-whep-proxy bug in one function: forward MediaMTX's
+// header unchanged and the browser sends PATCH and DELETE straight to a
+// loopback-bound server, bypassing the session check, and the stream dies after
+// ~10s with nothing in any log.
 export function parseSessionId(location: string | null): string | null {
   const id = location?.split('/').pop()
   return id === undefined || id === '' ? null : id
 }
 
-// Live view reads the SUB-stream and only the sub-stream (SPEC 7), so watching
-// can never disturb the recording. The suffix is applied here rather than sent
-// by the browser: `/live/yard/whep` resolves to `yard_sub`, and there is no
-// request shape that reaches the recorded path — `/live/yard_sub/whep` is just
-// an unknown camera.
+// Live view reads the SUB-stream and only the sub-stream
+// (docs/ARCHITECTURE.md#the-media-pipeline), so watching can never disturb the
+// recording. The suffix is applied here rather than sent by the browser:
+// `/live/yard/whep` resolves to `yard_sub`, and there is no request shape that
+// reaches the recorded path — `/live/yard_sub/whep` is just an unknown camera.
 const subPath = (slug: string) => `${slug}_sub`
 
 // The slug indexes a MediaMTX URL, so it is constrained before it is
@@ -119,7 +122,8 @@ export const liveRoute = new Hono<SessionEnv>()
       status: upstream.status,
       headers: {
         'content-type': 'application/sdp',
-        // Point the browser back at us, not at MediaMTX (SPEC 9).
+        // Point the browser back at us, not at MediaMTX
+        // (docs/ARCHITECTURE.md#the-whep-proxy).
         location: `/live/${slug}/whep/${session}`,
         etag: upstream.headers.get('etag') ?? '',
       },

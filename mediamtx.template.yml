@@ -1,4 +1,4 @@
-# Ronda media pipeline (SPEC 7).
+# Ronda media pipeline (docs/ARCHITECTURE.md#the-media-pipeline).
 #
 # MediaMTX owns the entire media path: it pulls RTSP from the camera, records
 # fMP4 segments to disk, serves WebRTC/WHEP for live, and stitches recorded
@@ -8,17 +8,19 @@
 # This is the TRACKED source. `cd apps/api && bun run render:mediamtx` renders
 # it to mediamtx.yml, filling in ${CAMERA_IP} and ${ONVIF_PASSWORD_MD5} from
 # .env. The rendered file is gitignored because that hash is a password hash
-# (SPEC 15).
+# (docs/ARCHITECTURE.md#the-trust-boundary).
 
 logLevel: info
 
-# SPEC 7 binds these to 127.0.0.1 directly. Inside a container that would make
-# them unreachable through a published port, so the loopback guarantee moves
-# one layer out: MediaMTX listens on all interfaces WITHIN its own network
-# namespace, and docker-compose.yml publishes each port to 127.0.0.1 only.
+# Binding these to 127.0.0.1 directly is the obvious reading. Inside a container
+# that would make them unreachable through a published port, so the loopback
+# guarantee moves one layer out: MediaMTX listens on all interfaces WITHIN its
+# own network namespace, and docker-compose.yml publishes each port to 127.0.0.1
+# only.
 #
-# The SPEC 15 property is unchanged and if anything stronger — nothing outside
-# this machine can reach a stream, and the container is network-isolated on top.
+# The loopback property (docs/ARCHITECTURE.md#the-trust-boundary) is unchanged
+# and if anything stronger — nothing outside this machine can reach a stream,
+# and the container is network-isolated on top.
 rtspAddress: :8554
 webrtcAddress: :8889
 apiAddress: :9997
@@ -27,11 +29,12 @@ playbackAddress: :9996
 api: yes
 playback: yes
 
-# Every protocol this project does not use is turned off, not just left
-# unbound. A MediaMTX at its defaults also serves RTMP on :1935, SRT on :8890
-# and MoQ on :8892-8893 — each a complete, unauthenticated way to read `yard`.
-# `hls: no` was already specified for a different reason (SPEC 1.3); the rest
-# follow the same logic.
+# Every protocol this project does not use is turned off, not just left unbound.
+# A MediaMTX at its defaults also serves RTMP on :1935, SRT on :8890 and MoQ on
+# :8892-8893 — each a complete, unauthenticated way to read `yard`. `hls: no`
+# was already specified for a different reason
+# (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do); the rest follow the
+# same logic.
 hls: no
 rtmp: no
 srt: no
@@ -65,10 +68,11 @@ webrtcLocalUDPAddress: :8189
 # express "only this machine" from behind NAT.
 #
 # The boundary that DOES hold is the publish address — docker-compose.yml binds
-# every port to 127.0.0.1, so nothing off this machine can reach them (SPEC 15).
-# That `127.0.0.1:` prefix is load-bearing; dropping it exposes the control API
-# to the LAN. If these ports ever need a wider bind, give this user a real
-# password rather than widening the IP list.
+# every port to 127.0.0.1, so nothing off this machine can reach them
+# (docs/ARCHITECTURE.md#the-trust-boundary). That `127.0.0.1:` prefix is
+# load-bearing; dropping it exposes the control API to the LAN. If these ports
+# ever need a wider bind, give this user a real password rather than widening
+# the IP list.
 authInternalUsers:
   - user: any
     pass:
@@ -88,9 +92,9 @@ authInternalUsers:
 pathDefaults:
   recordFormat: fmp4
   recordPartDuration: 1s
-  # NOT the 1h default. MediaMTX's reported timespan durations can disagree
-  # with what is on disk, so shorter segments bound the error to ten minutes
-  # (SPEC 8, item 4).
+  # NOT the 1h default. MediaMTX's reported timespan durations can disagree with
+  # what is on disk, so shorter segments bound the error to ten minutes
+  # (docs/ARCHITECTURE.md#timeline-gaps-and-coverage, item 4).
   recordSegmentDuration: 10m
   recordDeleteAfter: 168h # 7 days
 

@@ -25,7 +25,13 @@ const { listPaths } = vi.hoisted(() => ({ listPaths: vi.fn() }))
 vi.mock('../mediamtx/client', () => ({ listPaths }))
 
 const ROWS = [{ slug: 'yard', name: 'Yard', enabled: true }]
-const READY = { name: 'yard', ready: true, readyTime: 1787663581029, tracks: ['H264'], source: null }
+const READY = {
+  name: 'yard',
+  ready: true,
+  readyTime: 1787663581029,
+  tracks: ['H264'],
+  source: null,
+}
 const IDLE = { name: 'yard_sub', ready: false, readyTime: null, tracks: [], source: null }
 
 const SESSION = {
@@ -77,9 +83,9 @@ describe('GET /cameras', () => {
     })
   })
 
-  // SPEC 15: the RTSP path IS md5(ONVIF_PASSWORD), so a leaked stream URL leaks
-  // a password hash. Asserted on the serialized body, which is what would
-  // actually cross the wire.
+  // docs/ARCHITECTURE.md#the-trust-boundary: the RTSP path IS
+  // md5(ONVIF_PASSWORD), so a leaked stream URL leaks a password hash. Asserted
+  // on the serialized body, which is what would actually cross the wire.
   it('never sends an RTSP URL to the browser', async () => {
     getSession.mockResolvedValue(SESSION)
 
