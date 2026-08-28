@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import app from './index'
+import { app } from './index'
 
 describe('api smoke', () => {
   it('serves a health payload at the root', async () => {
@@ -27,6 +27,25 @@ describe('api smoke', () => {
     const res = await app.fetch(new Request('http://localhost/recordings/yard/timeline'))
 
     expect(res.status).toBe(401)
+  })
+
+  // The health page is behind the same door as the footage. Free disk, bytes
+  // per hour and the coverage history are an inventory of what this machine
+  // records and how long it keeps it.
+  it('guards /health', async () => {
+    const res = await app.fetch(new Request('http://localhost/health'))
+
+    expect(res.status).toBe(401)
+  })
+
+  // And the stream: an SSE endpoint that answered before resolving the session
+  // would leak every camera up/down transition to anyone holding the URL open,
+  // and would do it continuously rather than once.
+  it('guards the health event stream', async () => {
+    const res = await app.fetch(new Request('http://localhost/health/events'))
+
+    expect(res.status).toBe(401)
+    expect(res.headers.get('content-type')).not.toContain('text/event-stream')
   })
 
   // Likewise for the WHEP proxy: mounted on the real app, and closed. The

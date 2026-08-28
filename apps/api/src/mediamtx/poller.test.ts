@@ -423,18 +423,82 @@ describe('pollOnce', () => {
   })
 })
 
-describe('startPoller', () => {
-  it('does nothing while VITEST is set', async () => {
-    const { startPoller } = await load()
+// The SSE feed for /health/events. In-process pub/sub, which only works because
+// the poller and the API are the same process - the SPEC 2.3 argument for a
+// separate API server showing up as a feature rather than as a cost.
+describe('subscribe', () => {
+  it('delivers a transition, stamped with the detection instant', async () => {
+    primeInit(['yard'], ['up'])
+    listPaths.mockResolvedValue([YARD_DOWN])
+    const { pollOnce, subscribe } = await load()
 
-    startPoller()
-    await vi.advanceTimersByTimeAsync(30_000)
+    const seen: unknown[] = []
+    subscribe((event) => seen.push(event))
+    await pollOnce()
 
-    expect(listPaths).not.toHaveBeenCalled()
+    // The DETECTION instant, matching the row that was written - never
+    // readyTime, which would predate the gap the transition explains.
+    expect(seen).toEqual([{ slug: 'yard', kind: 'down', detail: null, at: NOW }])
   })
 
+  // The audit trail wins. A subscriber told about a transition that was not
+  // persisted would put the health page and stream_events into disagreement,
+  // and the next poll retries the write - which would then emit it twice.
+  it('says nothing when the write failed', async () => {
+    primeInit(['yard'], ['up'])
+    listPaths.mockResolvedValue([YARD_DOWN])
+    fail.next = true
+    const { pollOnce, subscribe } = await load()
+
+    const seen: unknown[] = []
+    subscribe((event) => seen.push(event))
+    await pollOnce()
+
+    expect(inserted).toHaveLength(0)
+    expect(seen).toEqual([])
+  })
+
+  it('stops delivering once unsubscribed', async () => {
+    primeInit(['yard'], ['up'])
+    listPaths.mockResolvedValue([YARD_DOWN])
+    const { pollOnce, subscribe } = await load()
+
+    const seen: unknown[] = []
+    const unsubscribe = subscribe((event) => seen.push(event))
+    unsubscribe()
+    await pollOnce()
+
+    expect(inserted).toHaveLength(1)
+    expect(seen).toEqual([])
+  })
+
+  // A dropped SSE frame is a page that refreshes a beat late; an exception
+  // escaping into setInterval is a camera that stops being watched.
+  it('one listener throwing takes down neither the poll nor another listener', async () => {
+    primeInit(['yard'], ['up'])
+    listPaths.mockResolvedValue([YARD_DOWN])
+    const { pollOnce, subscribe } = await load()
+
+    const seen: unknown[] = []
+    subscribe(() => {
+      throw new Error('listener blew up')
+    })
+    subscribe((event) => seen.push(event))
+
+    await expect(pollOnce()).resolves.toBeUndefined()
+
+    expect(inserted).toHaveLength(1)
+    expect(seen).toHaveLength(1)
+    expect(errorSpy).toHaveBeenCalled()
+  })
+})
+
+// No `does nothing while VITEST is set` case any more: that guard is gone. It
+// was replaced by the src/server.ts entrypoint split, so nothing under test
+// imports the module that calls startPoller at all - which is why this suite can
+// call it directly with no environment stubbing.
+describe('startPoller', () => {
   it('polls immediately and then on the interval, and ignores a second start', async () => {
-    vi.stubEnv('VITEST', '')
     primeInit(['yard'], ['up'])
     const { startPoller } = await load()
 

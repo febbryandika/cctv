@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --watch --env-file=../../.env src/index.ts",
+    "dev": "bun --watch --env-file=../../.env src/server.ts",
     "typecheck": "tsgo --noEmit",
     "typecheck:tsc": "tsc --noEmit",
     "lint": "eslint .",

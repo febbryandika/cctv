@@ -2,15 +2,15 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth, WEB_ORIGINS } from './auth'
 import { camerasRoute } from './routes/cameras'
+import { healthRoute } from './routes/health'
 import { liveRoute } from './routes/live'
 import { recordingsRoute } from './routes/recordings'
-import { startPoller } from './mediamtx/poller'
 
 // Chained so the type carries every route
 // (docs/ARCHITECTURE.md#the-api-surface). .route() must stay INSIDE the chain:
 // assigning to a local and calling .route() on the next line drops the route
 // from AppType silently, with no compile error here and an inscrutable one in
-// apps/web. TODO: mount /health.
+// apps/web.
 //
 // CORS covers every path, not just /api/auth/*: the web app is a separate
 // origin, so it will call the media routes cross-origin too. credentials:true
@@ -30,19 +30,15 @@ const app = new Hono()
   .route('/cameras', camerasRoute)
   .route('/live', liveRoute)
   .route('/recordings', recordingsRoute)
+  .route('/health', healthRoute)
 
 // The web app imports this type-only to build a typed client via hc<AppType>.
 // Nothing crosses this boundary at runtime.
 export type AppType = typeof app
 
-// Module-level, and that is half the reason this is a separate process
-// (docs/ARCHITECTURE.md#why-a-separate-api-server): a long-lived job here is
-// plain module code, with no lifecycle hook and no globalThis singleton to
-// survive HMR. A no-op under Vitest, and guarded against a second start - see
-// startPoller.
-startPoller()
-
-export default {
-  port: Number(process.env.PORT ?? 3001),
-  fetch: app.fetch,
-}
+// The app and nothing else. Every long-lived job - the poller, the nightly
+// snapshot - starts in src/server.ts, which is the entrypoint `bun dev` runs.
+// The split is what lets this module be imported by the test suite without
+// dialling MediaMTX, opening a postgres socket and holding an interval past
+// teardown; it replaced a `process.env.VITEST` check in production code.
+export { app }

@@ -33,3 +33,10 @@ export type TimelineResponse = InferResponseType<
 >
 export type TimelineSpan = TimelineResponse['spans'][number]
 export type TimelineGap = TimelineResponse['gaps'][number]
+
+// Narrowed to 200 for the same reason as the timeline: /health also answers
+// 401, and without the status argument every field read below would need
+// narrowing the component has already done by checking res.ok.
+export type HealthResponse = InferResponseType<typeof api.health.$get, 200>
+export type CameraHealth = HealthResponse['cameras'][number]
+export type CoverageDay = CameraHealth['history'][number]
