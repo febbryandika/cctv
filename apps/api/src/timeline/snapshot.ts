@@ -248,27 +248,67 @@ export async function snapshotCamera(slug: string, now: number): Promise<void> {
  * another's, and a fan-out would open concurrent connections against a pool
  * capped at max: 5.
  */
-export async function runSnapshot(now: number): Promise<void> {
+export async function runSnapshot(now: number): Promise<boolean> {
   let enabled: { slug: string }[]
   try {
     enabled = await db.select({ slug: cameras.slug }).from(cameras).where(eq(cameras.enabled, true))
   } catch (error) {
+    // A cold Neon compute can lose this race as easily as a slow MediaMTX can
+    // lose the one below, and both are worth retrying rather than sleeping on.
     console.error('snapshot: camera list failed -', error)
-    return
+    return false
   }
+
+  let complete = true
 
   for (const { slug } of enabled) {
     try {
       await snapshotCamera(slug, now)
     } catch (error) {
       console.error(`snapshot: ${slug} failed -`, error)
+      complete = false
     }
   }
+
+  return complete
 }
+
+// The boot backfill retries; the nightly run does not need to, because a failed
+// night is retried the next night anyway. Thirty seconds for five minutes is
+// generous for what it is actually waiting on - a container that is up but not
+// yet listening - and bounded, so a MediaMTX that is genuinely down does not
+// leave a timer walking the filesystem forever.
+const BOOT_RETRY_MS = 30_000
+const BOOT_ATTEMPTS = 10
 
 // A boolean rather than the timer handle, for the same reason the poller uses
 // one: nothing ever stops this, the process is the lifecycle.
 let started = false
+
+/**
+ * The boot run, retried until every camera is written.
+ *
+ * `docker compose up -d` returns when the containers have been CREATED, not
+ * when MediaMTX is listening, and the documented setup order runs `bun dev`
+ * immediately afterwards - so the API winning that race is the normal case on a
+ * fresh clone, not an edge one. Without the retry the backfill logs one failure
+ * and then waits until 00:15 tomorrow, which loses the entire reason it runs at
+ * boot: a coverage trend that is populated the moment the API starts.
+ *
+ * The poller solves the same race by simply polling again in ten seconds. This
+ * is that posture, bounded.
+ */
+async function backfillAtBoot(attempt = 1): Promise<void> {
+  if (await runSnapshot(Date.now())) return
+
+  if (attempt >= BOOT_ATTEMPTS) {
+    console.error(`snapshot: backfill gave up after ${attempt} attempts, waiting for tonight`)
+    return
+  }
+
+  console.warn(`snapshot: backfill incomplete, retrying in ${BOOT_RETRY_MS / 1000}s`)
+  setTimeout(() => void backfillAtBoot(attempt + 1), BOOT_RETRY_MS)
+}
 
 function schedule(): void {
   // setTimeout re-armed each night rather than setInterval(24h): an interval
@@ -293,6 +333,6 @@ export function startSnapshot(): void {
   if (started) return
   started = true
 
-  void runSnapshot(Date.now())
+  void backfillAtBoot()
   schedule()
 }

@@ -364,9 +364,44 @@ describe('runSnapshot', () => {
     failNext.on = true
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    await expect(runSnapshot(now)).resolves.toBeUndefined()
+    await expect(runSnapshot(now)).resolves.toBe(false)
 
     expect(logged).toHaveBeenCalled()
+    logged.mockRestore()
+  })
+
+  // The return value is what the boot backfill retries on. `docker compose up
+  // -d` returns when the containers are CREATED, not when MediaMTX is
+  // listening, so the API winning that race is the normal case on a fresh
+  // clone - and reporting a failed run as a successful one would let the
+  // backfill sleep until 00:15 tomorrow with an empty trend on the page.
+  it('reports whether every camera was written', async () => {
+    cameraRows.push({ slug: 'yard' })
+    listTimespans.mockResolvedValue(yesterday)
+
+    await expect(runSnapshot(now)).resolves.toBe(true)
+  })
+
+  it('reports a failure when MediaMTX is not listening yet', async () => {
+    cameraRows.push({ slug: 'yard' })
+    listTimespans.mockRejectedValue(new MediaMtxError('unreachable'))
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(runSnapshot(now)).resolves.toBe(false)
+
+    logged.mockRestore()
+  })
+
+  // A cold Neon compute loses this race the same way a slow MediaMTX loses the
+  // other one, and it is worth retrying rather than sleeping on.
+  it('reports a failure when the camera list cannot be read', async () => {
+    select.mockImplementationOnce(() => {
+      throw new Error('connection refused')
+    })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(runSnapshot(now)).resolves.toBe(false)
+
     logged.mockRestore()
   })
 })
