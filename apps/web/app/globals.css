@@ -4,9 +4,33 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The design's palette expressed through shadcn's OWN variable names, so every
+   component in components/ui inherits it with no per-component override. The
+   design ships its tokens as --bg / --fg-muted / --accent-mint; adopting those
+   names verbatim would have meant a second, parallel token system and a
+   restyle of every registry component. Only the values changed. */
 @theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: var(--font-sans);
+  /* Named after the loader's own variable rather than itself: `--font-sans:
+     var(--font-sans)` is circular, and resolved only because next/font's class
+     on <html> ties on specificity and wins on source order.
+     --font-heading is what radix-nova's CardTitle uses; the design has no
+     separate display face, so it maps to the same stack. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  /* A system stack, as the design specifies: no second webfont download for
+     text that is only ever timestamps, RTSP paths and the measure block. */
+  --font-mono:
+    ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+
+  /* Recorded footage, and time that has not happened yet. Previously
+     bg-emerald-500 and bg-muted, hard-coded in five places across the timeline,
+     the legend, the disk gauge and the coverage bars. They are semantic - what
+     the colour MEANS is "this was recorded" - so they belong in the token layer
+     where light and dark can disagree about the hue and still agree about the
+     meaning. */
+  --color-rec: var(--rec);
+  --color-future: var(--future);
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -23,6 +47,7 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -45,75 +70,130 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  --animate-status: status-pulse 2s ease-in-out infinite;
+  --animate-rise: rise 200ms ease-out;
 }
 
+/* Top level rather than inside @theme: these are referenced by the --animate-*
+   utilities above and by the LIVE pill's faster cadence, and a keyframe block
+   only Tailwind knows about is not emitted when the only user is an arbitrary
+   value. */
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Light. Warm paper rather than pure white - the design pairs a warm ground
+   with a cool blue primary, and oklch(1 0 0) beside it reads clinical. */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.98 0.012 80);
+  --foreground: oklch(0.3 0.02 250);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.3 0.02 250);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.3 0.02 250);
+  --primary: oklch(0.55 0.16 250);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.93 0.045 80);
+  --secondary-foreground: oklch(0.4 0.03 250);
+  --muted: oklch(0.95 0.014 80);
+  --muted-foreground: oklch(0.58 0.02 250);
+  --accent: oklch(0.95 0.014 80);
+  --accent-foreground: oklch(0.3 0.02 250);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.91 0.016 250);
+  --input: oklch(0.91 0.016 250);
+  --ring: oklch(0.65 0.12 250);
+
+  /* Mint at full lightness disappears against warm paper, so light mode mixes
+     it down toward its own dark counterpart. Same meaning, enough contrast to
+     read as a filled span against the destructive track. */
+  --rec: color-mix(in oklch, oklch(0.2 0.06 155) 45%, oklch(0.91 0.04 155));
+  --future: oklch(0.93 0.045 80);
+
+  --chart-1: oklch(0.55 0.16 250);
+  --chart-2: oklch(0.65 0.12 190);
+  --chart-3: oklch(0.7 0.11 155);
+  --chart-4: oklch(0.75 0.12 80);
+  --chart-5: oklch(0.65 0.16 30);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.3 0.02 250);
+  --sidebar-primary: oklch(0.55 0.16 250);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.95 0.014 80);
+  --sidebar-accent-foreground: oklch(0.3 0.02 250);
+  --sidebar-border: oklch(0.91 0.016 250);
+  --sidebar-ring: oklch(0.65 0.12 250);
 }
 
+/* Dark, and the default. A room with a camera feed in it is usually a dark
+   room, and every video surface in this app is letterboxed against #0b0d12. */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  --background: oklch(0.14 0.03 265);
+  --foreground: oklch(0.95 0.008 250);
+  --card: oklch(0.2 0.04 265);
+  --card-foreground: oklch(0.95 0.008 250);
+  --popover: oklch(0.2 0.04 265);
+  --popover-foreground: oklch(0.95 0.008 250);
+  --primary: oklch(0.72 0.12 250);
+  --primary-foreground: oklch(0.14 0.03 265);
+  --secondary: oklch(0.26 0.04 265);
+  --secondary-foreground: oklch(0.85 0.015 250);
+  --muted: oklch(0.26 0.04 265);
+  --muted-foreground: oklch(0.6 0.05 265);
+  --accent: oklch(0.26 0.04 265);
+  --accent-foreground: oklch(0.95 0.008 250);
+  --destructive: oklch(0.7 0.18 22);
+  --destructive-foreground: oklch(0.95 0.008 250);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.72 0.12 250);
+
+  --rec: oklch(0.91 0.04 155);
+  --future: oklch(0.26 0.04 265);
+
+  --chart-1: oklch(0.72 0.12 250);
+  --chart-2: oklch(0.75 0.1 190);
+  --chart-3: oklch(0.91 0.04 155);
+  --chart-4: oklch(0.93 0.045 80);
+  --chart-5: oklch(0.7 0.18 22);
+  --sidebar: oklch(0.2 0.04 265);
+  --sidebar-foreground: oklch(0.95 0.008 250);
+  --sidebar-primary: oklch(0.72 0.12 250);
+  --sidebar-primary-foreground: oklch(0.14 0.03 265);
+  --sidebar-accent: oklch(0.26 0.04 265);
+  --sidebar-accent-foreground: oklch(0.95 0.008 250);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: oklch(0.72 0.12 250);
+}
+
+/* The status dot and the LIVE pill breathe on a loop, which is exactly the
+   kind of indefinite animation this setting exists to stop. The colour still
+   carries the state, so nothing is lost by holding them still. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-status,
+  .animate-rise {
+    animation: none;
+  }
 }
 
 @layer base {
