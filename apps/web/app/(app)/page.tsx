@@ -1,16 +1,8 @@
 import { CameraList } from '@/components/camera-list'
 
+// The title and blurb moved into components/app-header.tsx when the rail
+// arrived: every screen has the same header shape, and three pages each
+// rendering their own h1 meant three places to keep it consistent.
 export default function LivePage() {
-  return (
-    <section className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Live</h1>
-        <p className="text-muted-foreground text-sm">
-          Sub-second WebRTC off the sub-stream, so watching never disturbs the recording. The status
-          badge polls every 10 seconds.
-        </p>
-      </div>
-      <CameraList />
-    </section>
-  )
+  return <CameraList />
 }

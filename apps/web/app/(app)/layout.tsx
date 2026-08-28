@@ -1,45 +1,33 @@
-import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { AppHeader } from '@/components/app-header'
+import { AppRail } from '@/components/app-rail'
 import { QueryProvider } from '@/components/query-provider'
-import { SignOutButton } from '@/components/sign-out-button'
-
-const NAV = [
-  { href: '/', label: 'Live' },
-  { href: '/recordings', label: 'Recordings' },
-  { href: '/health', label: 'Health' },
-] as const
+import { TransitionStream } from '@/components/transition-stream'
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-6 px-4">
-          <Link href="/" className="font-semibold tracking-tight">
-            Ronda
-          </Link>
-          <nav className="flex items-center gap-4 text-sm">
-            {NAV.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-          <div className="ml-auto">
-            <SignOutButton />
-          </div>
+    // h-screen with the scroll INSIDE the main column, not on the body: the
+    // live view is a video frame sized to the space that is left, and a page
+    // that scrolls as a whole has no such space to give it.
+    <div className="flex h-dvh overflow-hidden">
+      {/* Scoped to this group, not the root layout: /sign-in lives in (auth)
+          and queries nothing, so it stays free of an extra client boundary.
+          This layout stays a server component — a server layout may render a
+          client component and pass server-rendered children through it.
+
+          It wraps the rail as well as the page now: the rail reads camera
+          status and disk headroom on every screen, so it needs the same client
+          as the pages do, and a second QueryProvider would give it a second
+          cache polling the same two endpoints. */}
+      <QueryProvider>
+        <AppRail />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <AppHeader />
+          <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</main>
         </div>
-      </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
-        {/* Scoped to this group, not the root layout: /sign-in lives in (auth)
-            and queries nothing, so it stays free of an extra client boundary.
-            This layout stays a server component — a server layout may render a
-            client component and pass server-rendered children through it. */}
-        <QueryProvider>{children}</QueryProvider>
-      </main>
+        {/* Renders nothing; it is here for the subscription. */}
+        <TransitionStream />
+      </QueryProvider>
     </div>
   )
 }

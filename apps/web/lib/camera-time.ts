@@ -41,6 +41,13 @@ const clockFormat = new Intl.DateTimeFormat('en-GB', {
   minute: '2-digit',
 })
 
+const clockSecondsFormat = new Intl.DateTimeFormat('en-GB', {
+  timeZone: CAMERA_TZ,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
   timeZone: CAMERA_TZ,
   weekday: 'short',
@@ -105,6 +112,18 @@ export const shiftDay = (day: string, delta: number): string =>
 
 /** An RFC3339 instant as camera-local HH:MM. */
 export const formatClock = (iso: string): string => clockFormat.format(new Date(iso))
+
+/**
+ * An RFC3339 instant as camera-local HH:MM:SS.
+ *
+ * Seconds matter in exactly two places and nowhere else: the header clock,
+ * where a frozen-looking readout is indistinguishable from a broken one, and a
+ * timeline zoomed in far enough that every tick would otherwise print the same
+ * minute. It lives here rather than in either component because this file is
+ * the only place in the web app allowed to turn an instant into a wall-clock
+ * string (docs/ARCHITECTURE.md#timeline-gaps-and-coverage).
+ */
+export const formatClockSeconds = (iso: string): string => clockSecondsFormat.format(new Date(iso))
 
 /**
  * The camera-local calendar day happening now.
