@@ -1,3 +1,5 @@
+import { cameraUrls, maskRtsp } from '../src/camera'
+
 // Setup-time pre-flight (docs/ARCHITECTURE.md#measurement). Probes both RTSP
 // URLs with ffprobe, measures the real bitrate with ffmpeg, then makes the three
 // calls that decide whether a deployment can work at all: an H.265 main stream
@@ -27,30 +29,16 @@ const RECORDINGS_DIR = new URL(
   REPO_ROOT,
 )
 
-// The camera family this targets serves rtsp://<ip>:5543/<md5(password)>/live/channelN
-// (docs/ARCHITECTURE.md#the-media-pipeline), so the path itself is a secret.
-const CAMERA_RTSP_PORT = 5543
-
-// ?? '' collapses unset and empty into one failure, exactly as
-// scripts/render-mediamtx.ts does: md5('') is a real-looking hash, so a missing
-// password produces a URL that looks right and never connects.
-const cameraIp = Bun.env.CAMERA_IP ?? ''
-const onvifPassword = Bun.env.ONVIF_PASSWORD ?? ''
-
-const missing = (
-  [
-    ['CAMERA_IP', cameraIp],
-    ['ONVIF_PASSWORD', onvifPassword],
-  ] as const
-)
-  .filter(([, value]) => value === '')
-  .map(([name]) => name)
+// Unset and empty collapse into one failure, exactly as
+// scripts/render-mediamtx.ts does: probing an empty URL fails in a way that
+// looks like a broken camera rather than a missing setting.
+const { main: cameraMain, sub: cameraSub, missing } = cameraUrls()
 
 if (missing.length > 0) {
   console.error(
     `doctor: missing or empty in .env — ${missing.join(', ')}\n` +
-      'Run `cp .env.example .env` at the repo root and fill them in. Probing a\n' +
-      'placeholder URL would fail in a way that looks like a broken camera.',
+      'Run `cp .env.example .env` at the repo root and fill them in. It explains\n' +
+      'how to ask the camera for its own stream URLs over ONVIF.',
   )
   process.exit(1)
 }
@@ -62,14 +50,12 @@ for (const binary of ['ffprobe', 'ffmpeg']) {
   }
 }
 
-const onvifPasswordMd5 = new Bun.CryptoHasher('md5').update(onvifPassword).digest('hex')
-const cameraUrl = (channel: 0 | 1) =>
-  `rtsp://${cameraIp}:${CAMERA_RTSP_PORT}/${onvifPasswordMd5}/live/channel${channel}`
-
-// Regex rather than a fixed string because the sub-stream source is configurable
-// and may or may not embed the hash (docs/ARCHITECTURE.md#the-trust-boundary).
-// Enough to confirm the IP and the shape, never the hash itself.
-const mask = (url: string) => url.replace(/[0-9a-f]{32}/g, '•'.repeat(8))
+// Shared with render:mediamtx and seed so there is one implementation to
+// audit. It redacts a password in userinfo AND md5(password) in the path: this
+// script prints a URL every time it runs, and which of the two shapes a given
+// camera uses is not something the operator should have to think about
+// (docs/ARCHITECTURE.md#the-trust-boundary).
+const mask = maskRtsp
 
 type Command = { code: number; stdout: string; stderr: string }
 
@@ -187,7 +173,7 @@ const mbps = (bps: number) => `${(bps / 1_000_000).toFixed(2)} Mbps`
 // probing it would report a broken deployment that is working fine. MediaMTX
 // itself is the only honest source for which of the two is true.
 async function mainStreamUrl(): Promise<{ url: string; note: string }> {
-  const camera = { url: cameraUrl(0), note: 'pulled by MediaMTX from the camera' }
+  const camera = { url: cameraMain, note: 'pulled by MediaMTX from the camera' }
 
   try {
     const path = await getPath('yard')
@@ -205,7 +191,7 @@ async function mainStreamUrl(): Promise<{ url: string; note: string }> {
   return camera
 }
 
-const subUrl = Bun.env.YARD_SUB_SOURCE || cameraUrl(1)
+const subUrl = cameraSub
 const main = await mainStreamUrl()
 
 console.log('doctor: resolved stream URLs')
@@ -225,23 +211,41 @@ console.log(`  main      ${describe(mainStream)}`)
 console.log(`  sub       ${describe(subStream)}`)
 
 const failures: string[] = []
-const check = (name: string, ok: boolean, detail: string) => {
-  console.log(`  ${name.padEnd(18)}${ok ? 'ok  ' : 'FAIL'}  ${detail}`)
-  if (!ok) failures.push(name)
+const warnings: string[] = []
+
+// Three levels, not two. SPEC 10 calls the H.265 case a WARN and it is right
+// to: HEVC playback is hardware-gated rather than absent, so the same recording
+// plays in Chrome and Safari on a machine with a hardware decoder and fails on
+// one without. Exiting non-zero for a setup that works on the operator's own
+// machine would make `doctor` the thing that lies.
+const report = (name: string, level: 'ok' | 'warn' | 'FAIL', detail: string) => {
+  console.log(`  ${name.padEnd(18)}${level.padEnd(4)}  ${detail}`)
+  if (level === 'FAIL') failures.push(name)
+  if (level === 'warn') warnings.push(name)
 }
+
+const check = (name: string, ok: boolean, detail: string) =>
+  report(name, ok ? 'ok' : 'FAIL', detail)
 
 console.log('\ndoctor: checks')
 
-// H.265 records smaller and plays in almost nothing. The project does not
-// transcode (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do), so the
-// answer is to record the H.264 sub-stream, or accept an archive nobody can view.
-check(
+// H.265 records smaller and plays back conditionally. Measured against Chrome
+// 152 on Apple silicon it plays fine — canPlayType says "probably", MSE accepts
+// it, and a 2304x1296 hvc1 clip decodes — because the machine has a hardware
+// HEVC decoder and Chrome will use it. Safari is the same. A browser on
+// hardware without one plays nothing, and Playwright's bundled Chromium ships
+// no HEVC at all, so an e2e suite pointed at H.265 footage would fail.
+//
+// So it is a warning about portability, not a broken install. The project does
+// not transcode (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do); the
+// escape hatch is recording the H.264 sub-stream instead.
+report(
   'main codec',
-  mainStream !== null && mainStream.codec !== 'hevc',
+  mainStream === null ? 'FAIL' : mainStream.codec === 'hevc' ? 'warn' : 'ok',
   mainStream === null
-    ? 'main stream unreachable — check CAMERA_IP and ONVIF_PASSWORD, then re-run render:mediamtx'
+    ? 'main stream unreachable — check CAMERA_RTSP_MAIN, then re-run render:mediamtx'
     : mainStream.codec === 'hevc'
-      ? 'H.265 will not play back in most browsers — record the sub-stream instead'
+      ? 'H.265 needs a hardware decoder — plays in Chrome/Safari on this Mac, not everywhere'
       : `${mainStream.codec} plays in every target browser`,
 )
 
@@ -249,7 +253,7 @@ check(
   'sub codec',
   subStream !== null && subStream.codec === 'h264',
   subStream === null
-    ? 'sub-stream unreachable — live view has nothing to read (check YARD_SUB_SOURCE)'
+    ? 'sub-stream unreachable — live view has nothing to read (check CAMERA_RTSP_SUB)'
     : subStream.codec === 'h264'
       ? 'h264, so live view needs no transcode'
       : `${subStream.codec} would need transcoding, which this project does not do`,
@@ -272,9 +276,13 @@ check(
         (daysUntilFull >= retentionDays ? '' : ' — the disk fills before retention expires'),
 )
 
+const noted = warnings.length > 0 ? ` (${warnings.length} warning: ${warnings.join(', ')})` : ''
+
 if (failures.length > 0) {
-  console.error(`\ndoctor: ${failures.length} check(s) failed — ${failures.join(', ')}`)
+  console.error(`\ndoctor: ${failures.length} check(s) failed — ${failures.join(', ')}${noted}`)
   process.exit(1)
 }
 
-console.log('\ndoctor: all checks passed')
+// Warnings do not fail the run. They are things to know, not things to fix
+// before the system can be trusted to record.
+console.log(`\ndoctor: all checks passed${noted}`)

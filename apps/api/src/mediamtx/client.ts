@@ -124,10 +124,10 @@ function parse<S extends z.ZodType>(schema: S, value: unknown, url: string): z.i
 }
 
 // Runtime state, NOT /v3/config/paths/list. The config endpoint returns the
-// CONFIGURED source, which for a real camera is
-// rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0 — proxying it would ship
-// a password hash to the browser (docs/ARCHITECTURE.md#the-trust-boundary).
-// This endpoint carries no secret.
+// CONFIGURED source, which for a real camera is its full RTSP URL — carrying
+// either a password in userinfo or md5(password) in the path. Proxying it would
+// ship the camera's credentials to the browser
+// (docs/ARCHITECTURE.md#the-trust-boundary). This endpoint carries no secret.
 export async function listPaths(): Promise<MediaMtxPath[]> {
   const url = `${CONTROL_URL}/v3/paths/list`
   return parse(pathListSchema, await fetchJson(url), url).items

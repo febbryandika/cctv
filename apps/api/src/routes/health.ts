@@ -207,10 +207,10 @@ export const healthRoute = new Hono<SessionEnv>()
     const now = Date.now()
     const window: Span = { start: now - WINDOW_MS, end: now }
 
-    // Columns named one by one, not select(): rtsp_main and rtsp_sub contain
-    // md5(ONVIF_PASSWORD) (docs/ARCHITECTURE.md#the-trust-boundary), so a
-    // select() here would put a password hash one JSON.stringify from the
-    // browser.
+    // Columns named one by one, not select(): rtsp_main and rtsp_sub are the
+    // camera's stream URLs and carry its credentials
+    // (docs/ARCHITECTURE.md#the-trust-boundary), so a select() here would put a
+    // password one JSON.stringify from the browser.
     const rows = await db
       .select({ slug: cameras.slug, name: cameras.name, enabled: cameras.enabled })
       .from(cameras)
