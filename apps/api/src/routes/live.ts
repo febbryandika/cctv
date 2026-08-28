@@ -48,12 +48,34 @@ export function parseSessionId(location: string | null): string | null {
   return id === undefined || id === '' ? null : id
 }
 
-// Live view reads the SUB-stream and only the sub-stream
-// (docs/ARCHITECTURE.md#the-media-pipeline), so watching can never disturb the
-// recording. The suffix is applied here rather than sent by the browser:
-// `/live/yard/whep` resolves to `yard_sub`, and there is no request shape that
-// reaches the recorded path — `/live/yard_sub/whep` is just an unknown camera.
-const subPath = (slug: string) => `${slug}_sub`
+/**
+ * Which MediaMTX path live view actually watches.
+ *
+ * The default is the SUB-stream (docs/ARCHITECTURE.md#the-media-pipeline): low
+ * bitrate, H.264, and a separate pull from the camera, so watching can never
+ * disturb the recording and the picture plays in any browser.
+ *
+ * LIVE_SOURCE=main opts into watching the recorded path instead, at full
+ * resolution. That is a real trade and it is opt-in for a reason:
+ *
+ *   - the main stream may be H.265, which needs a hardware decoder — it plays
+ *     in Chrome and Safari on a machine that has one and shows nothing on a
+ *     machine that does not, where the sub-stream always plays;
+ *   - it costs the property this function used to guarantee outright, that no
+ *     request shape reaches the recorded path.
+ *
+ * What it does NOT cost is the recording. `yard` is sourceOnDemand: no, so it
+ * is already being pulled around the clock; a WebRTC reader attaches to the
+ * stream MediaMTX has open rather than opening a second one, and the recorder
+ * writes from the same source either way.
+ *
+ * Either way the path is derived HERE and never sent by the browser, so the
+ * only reachable paths are the ones this function can produce.
+ *
+ * Read per call rather than at module scope so a test can set it.
+ */
+export const livePath = (slug: string) =>
+  process.env.LIVE_SOURCE === 'main' ? slug : `${slug}_sub`
 
 // The slug indexes a MediaMTX URL, so it is constrained before it is
 // interpolated; the cameras lookup below is the real gate.
@@ -88,7 +110,7 @@ export const liveRoute = new Hono<SessionEnv>()
 
     let upstream: Response
     try {
-      upstream = await fetch(`${WEBRTC_URL}/${encodeURIComponent(subPath(slug))}/whep`, {
+      upstream = await fetch(`${WEBRTC_URL}/${encodeURIComponent(livePath(slug))}/whep`, {
         method: 'POST',
         headers: { 'content-type': 'application/sdp' },
         body: offer,
@@ -141,7 +163,7 @@ export const liveRoute = new Hono<SessionEnv>()
 
     try {
       const upstream = await fetch(
-        `${WEBRTC_URL}/${encodeURIComponent(subPath(slug))}/whep/${encodeURIComponent(session)}`,
+        `${WEBRTC_URL}/${encodeURIComponent(livePath(slug))}/whep/${encodeURIComponent(session)}`,
         {
           method: 'PATCH',
           headers: {
@@ -177,7 +199,7 @@ export const liveRoute = new Hono<SessionEnv>()
     // session the caller does not own.
     try {
       const upstream = await fetch(
-        `${WEBRTC_URL}/${encodeURIComponent(subPath(slug))}/whep/${encodeURIComponent(session)}`,
+        `${WEBRTC_URL}/${encodeURIComponent(livePath(slug))}/whep/${encodeURIComponent(session)}`,
         { method: 'DELETE', signal: AbortSignal.timeout(TIMEOUT_MS) },
       )
       if (!upstream.ok && upstream.status !== 404) {

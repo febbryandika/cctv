@@ -87,10 +87,27 @@ writes the real config, which is gitignored — see
 | `yard` | main, high | continuously | always (`sourceOnDemand: no`) |
 | `yard_sub` | sub, low bitrate H.264 | never | only while someone watches |
 
-Live view reads `yard_sub`, so **watching costs almost nothing and a viewer can
-never disturb the recording.** That is enforced by the API rather than asked of
-the client: `/live/yard/whep` resolves to `yard_sub`, and `/live/yard_sub/whep`
-is an unknown camera. There is no request shape that reaches the recorded path.
+By default live view reads `yard_sub`, so **watching costs almost nothing and a
+viewer can never disturb the recording.** That is enforced by the API rather
+than asked of the client: `/live/yard/whep` resolves to `yard_sub`, and
+`/live/yard_sub/whep` is an unknown camera.
+
+`LIVE_SOURCE=main` points live view at the recorded path instead, for a camera
+whose sub-stream is too small to be useful — 640x360 on the reference unit.
+It is opt-in because it costs two things. The main stream may be **H.265**,
+which needs a hardware decoder: it plays in Chrome and Safari on a machine that
+has one and shows a blank frame on a machine that does not, where the
+sub-stream always plays. And it gives up the guarantee that no request shape
+reaches the recorded path.
+
+It does **not** cost the recording. `yard` is `sourceOnDemand: no`, so it is
+already pulled around the clock; a WebRTC viewer attaches to the stream
+MediaMTX already has open rather than opening a second one, and the recorder
+writes from that same source either way.
+
+Either way the path is derived **server-side** and never sent by the browser,
+so the set of reachable paths is exactly what `livePath()` in
+`routes/live.ts` can produce.
 
 Segments are **10 minutes**, not the 1-hour default. MediaMTX's reported
 timespan durations can disagree with what is on disk, most visibly on the first

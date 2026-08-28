@@ -21,6 +21,25 @@ const ICE_GATHER_TIMEOUT_MS = 1_000
 // Fast enough to look live, slow enough that getStats() is not itself a cost.
 const STATS_INTERVAL_MS = 2_000
 
+/**
+ * Whether this browser can receive H.265 over WebRTC at all.
+ *
+ * Asked of the browser rather than assumed: HEVC over WebRTC is gated on a
+ * hardware decoder, so the answer differs between two machines running the same
+ * Chrome build. If it is false and the handshake failed, the codec is the
+ * overwhelmingly likely reason — MediaMTX has nothing to offer a receiver that
+ * advertises no H.265, so it rejects the offer and the API forwards a 502.
+ */
+function canReceiveHevc(): boolean {
+  const codecs = RTCRtpReceiver.getCapabilities?.('video')?.codecs
+  return codecs?.some((codec) => /h265|hevc/i.test(codec.mimeType)) ?? false
+}
+
+// How long a connected stream may show nothing before that counts as a failure
+// rather than as buffering. Generous: a first keyframe on a 15fps camera can be
+// a second or two out, and crying wolf here would be worse than the silence.
+const FIRST_FRAME_GRACE_MS = 6_000
+
 function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve()
 
@@ -96,6 +115,13 @@ export function LivePlayer({
   const shellRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [bufferMs, setBufferMs] = useState<number | null>(null)
+  // Read off the element rather than from config. Which MediaMTX path the API
+  // resolved to is a server-side decision (LIVE_SOURCE), and duplicating it
+  // here would be a label that can disagree with the picture. videoWidth is
+  // the picture.
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  const [undecodable, setUndecodable] = useState(false)
+  const [hevcLikely, setHevcLikely] = useState(false)
 
   // The frame's own clock. Same zone and same formatter as the header's — a
   // burnt-in timestamp is what makes a screenshot of this frame evidence rather
@@ -110,6 +136,26 @@ export function LivePlayer({
   useEffect(() => {
     reportRef.current = onTimeToFirstFrame
   }, [onTimeToFirstFrame])
+
+  // Connected but decoding nothing. A browser with no hardware HEVC decoder
+  // completes the WHEP handshake, reports the connection as live, and produces
+  // either no track at all or a track whose videoWidth stays 0 — so neither the
+  // connection state nor an `error` event will ever tell the operator. Only the
+  // absence of pixels does, and only after giving the first frame time to
+  // arrive.
+  useEffect(() => {
+    // No reset branch: setting state synchronously in an effect body is a
+    // cascading render, and it is unnecessary here because the banner is
+    // rendered behind `live &&`. A stale `true` is invisible until the stream
+    // is live again, at which point this effect re-runs and re-decides.
+    if (status !== 'live') return
+
+    const timer = setTimeout(() => {
+      setUndecodable((videoRef.current?.videoWidth ?? 0) === 0)
+    }, FIRST_FRAME_GRACE_MS)
+
+    return () => clearTimeout(timer)
+  }, [status, size?.w])
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -234,6 +280,9 @@ export function LivePlayer({
     connect().catch((error: unknown) => {
       if (cancelled || abort.signal.aborted) return
       console.error('live: WHEP handshake failed -', error)
+      // Recorded before the status flips so the error view can name a cause
+      // instead of asking the operator to guess.
+      setHevcLikely(!canReceiveHevc())
       setStatus('error')
     })
 
@@ -269,8 +318,28 @@ export function LivePlayer({
         muted
         playsInline
         aria-label={`Live view of ${name}`}
+        onLoadedMetadata={(event) =>
+          setSize({ w: event.currentTarget.videoWidth, h: event.currentTarget.videoHeight })
+        }
+        onResize={(event) =>
+          setSize({ w: event.currentTarget.videoWidth, h: event.currentTarget.videoHeight })
+        }
         className={cn('size-full object-contain', live ? 'block' : 'hidden')}
       />
+
+      {live && undecodable ? (
+        <Overlay>
+          <TriangleAlertIcon className="text-destructive size-7" aria-hidden />
+          <p className="max-w-[52ch] text-sm leading-relaxed text-white/80">
+            The stream is connected but this browser decoded no video.
+          </p>
+          <p className="max-w-[54ch] text-xs leading-relaxed text-white/50">
+            The camera is almost certainly sending H.265, which needs a hardware decoder this
+            browser does not have. Set <span className="font-mono">LIVE_SOURCE=sub</span> to watch
+            the H.264 sub-stream instead, which plays anywhere.
+          </p>
+        </Overlay>
+      ) : null}
 
       {status === 'connecting' ? (
         <Overlay>
@@ -286,7 +355,7 @@ export function LivePlayer({
         <Overlay>
           <WifiOffIcon className="size-[30px] text-white/50" aria-hidden />
           <p className="max-w-[46ch] text-sm leading-relaxed text-white/80">
-            Camera offline. Nothing is publishing the sub-stream.
+            Camera offline. Nothing is publishing this stream.
           </p>
           {/* The important half. Live view and recording are separate MediaMTX
               paths, and an operator who only reads the first line may assume
@@ -310,6 +379,14 @@ export function LivePlayer({
           <p className="max-w-[48ch] text-sm leading-relaxed text-white/80">
             Live view failed. The WHEP handshake did not complete — reload to try again.
           </p>
+          {hevcLikely ? (
+            <p className="max-w-[54ch] text-xs leading-relaxed text-white/50">
+              This browser advertises no H.265 receiver, so if the camera&apos;s main stream is
+              H.265 there was nothing for it to negotiate. Set{' '}
+              <span className="font-mono">LIVE_SOURCE=sub</span> on the API to watch the H.264
+              sub-stream, which plays anywhere.
+            </p>
+          ) : null}
         </Overlay>
       ) : null}
 
@@ -327,7 +404,10 @@ export function LivePlayer({
           </span>
         )}
         <span className="text-[13px] font-semibold text-white">{name}</span>
-        <span className="font-mono text-[11px] text-white/60">{slug}_sub · WebRTC</span>
+        {/* The measured picture, not the configured one. */}
+        <span className="font-mono text-[11px] text-white/60">
+          {size && size.w > 0 ? `${size.w}×${size.h} · ` : ''}WebRTC
+        </span>
         <div className="ml-auto flex items-center gap-3.5 font-mono text-[11px] tabular-nums text-white/75">
           {live && bufferMs !== null ? <span>buffer {bufferMs} ms</span> : null}
           <span>{now === null ? '--:--:--' : formatClockSeconds(new Date(now).toISOString())}</span>
