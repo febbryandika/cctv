@@ -4,6 +4,7 @@ import { auth, WEB_ORIGINS } from './auth'
 import { camerasRoute } from './routes/cameras'
 import { liveRoute } from './routes/live'
 import { recordingsRoute } from './routes/recordings'
+import { startPoller } from './mediamtx/poller'
 
 // Chained so the type carries every route
 // (docs/ARCHITECTURE.md#the-api-surface). .route() must stay INSIDE the chain:
@@ -33,6 +34,13 @@ const app = new Hono()
 // The web app imports this type-only to build a typed client via hc<AppType>.
 // Nothing crosses this boundary at runtime.
 export type AppType = typeof app
+
+// Module-level, and that is half the reason this is a separate process
+// (docs/ARCHITECTURE.md#why-a-separate-api-server): a long-lived job here is
+// plain module code, with no lifecycle hook and no globalThis singleton to
+// survive HMR. A no-op under Vitest, and guarded against a second start - see
+// startPoller.
+startPoller()
 
 export default {
   port: Number(process.env.PORT ?? 3001),

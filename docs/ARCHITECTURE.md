@@ -360,12 +360,37 @@ No Prometheus, no Grafana; one camera does not need a metrics stack.
 
 - **`stream_events`** is the audit trail. Every up/down transition with a
   timestamp is what turns an anonymous hole in the timeline into "the camera
-  rebooted at 03:14".
+  rebooted at 03:14". A poller in the Hono process reads MediaMTX's control API
+  every 10 seconds and writes a row only when the answer changes.
 - **`daily_coverage`** is the long memory. Recordings are deleted after the
   retention window; the record of how reliable the system was should outlive
   them.
 - **`/health/events`** pushes transitions to the health page over SSE, so a
   watching operator sees a drop when it happens rather than at the next refresh.
+
+Three decisions in the poller are load-bearing and none of them are obvious from
+the code alone:
+
+- **The last known state lives in memory, not in a query.** Re-reading the last
+  event every tick would be correct and would also keep Neon's compute awake
+  around the clock, against the same budget `idle_timeout: 30` exists to
+  protect. Postgres is touched twice at startup and once per transition, so a
+  camera that stays up costs nothing after boot. The price is that the camera
+  list is read once — adding a camera needs a restart.
+- **An unreachable control API is not a `down`.** It is the same distinction
+  `/cameras` draws between "this camera is down" and "we could not tell":
+  writing `down` there would blame the camera for the API server's own
+  blindness and label the gap `camera_down` on no evidence. The poller logs and
+  retries, and the gap reads `unknown` — which is the honest answer.
+- **The timestamp is the moment of detection, never `readyTime`.** `inferCause`
+  matches a `down` only inside `[gap.start, gap.end)`, and a transition
+  detected up to ten seconds late lands just inside the gap it explains.
+  Backdating it to the path's `readyTime` would place it before the gap began,
+  the match would fail, and the gap would read `unknown` with nothing wrong in
+  any log. Measured on a three-minute outage: the gap opened at 04:18:24.829
+  and the `down` was recorded at 04:18:25.622, 0.79s inside it. The ordering is
+  structural rather than lucky — the poller cannot observe a disconnect before
+  it happens.
 
 Two things are worth watching: **coverage trending down**, which means something
 is failing intermittently and nobody has noticed, and **bytes/hour trending up**,
