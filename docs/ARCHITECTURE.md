@@ -334,8 +334,6 @@ the bound is on work done upstream, not on bytes moved here.
 
 ## Measurement
 
-*Designed; not yet built.*
-
 The thing that separates this from a tutorial: the system reports how well it
 actually worked, and the number goes in the README.
 
@@ -349,6 +347,22 @@ actually worked, and the number goes in the README.
 - **`measure`** reports coverage, storage, and time-to-first-frame over the last
   24 hours — including the discrepancy between reported timespan durations and
   on-disk file sizes, rather than hiding it.
+
+Two things the implementation settled that are easy to get wrong later:
+
+**The reported-vs-on-disk cross-check needs a ruler the reported durations did
+not produce.** That ruler is `recordSegmentDuration`: a complete segment is ten
+minutes long, so the median segment size divided by ten minutes is a
+bytes-per-second derived only from the filesystem. Multiplying the total bytes
+back through it gives an on-disk duration to set against MediaMTX's `/list`.
+Median rather than mean, because an interrupted run leaves short segments behind.
+
+**Segment files are weighed, never parsed for their timestamps.** `recordPath`
+uses strftime in the recorder's *own* local time, and MediaMTX runs in a
+container whose zone is UTC while the host here runs `Asia/Jakarta` — so a
+filename that looks local is not, and reading it as either is a seven-hour bug
+waiting for a different deployment. `mtime` is an unambiguous instant and needs
+no zone at all.
 
 Both need a real camera and real elapsed time, so they stay manual and out of
 CI. They exist to answer one question honestly — *did this thing actually record

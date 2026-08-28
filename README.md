@@ -96,8 +96,91 @@ reaches the recorded path.
 
 ## Coverage
 
-> **TODO:** the real number from `bun run measure`, with the method and the
-> 2-second merge tolerance.
+A recorder that hides its gaps is worse than no recorder, so the system measures
+itself and the number goes here — whatever it says. `cd apps/api && bun run
+measure`, against the fake camera on a development laptop:
+
+```
+measure: coverage (yard)
+  coverage          65.35%
+  gaps              5 over 2s
+
+  from                 duration   cause
+  27/08/2026, 18:19:08 37m 21s    unknown
+  28/08/2026, 02:08:17 7h 7m      unknown
+  28/08/2026, 11:18:24 3m 11s     camera_down
+  28/08/2026, 11:59:07 30m 3s     unknown
+  28/08/2026, 13:56:05 1m 7s      camera_down
+
+measure: storage (yard)
+  written           2.95 GB in 24h (123 MB/hour)
+  projected         2.95 GB/day, 55.14 GB free = 18.7 days
+  reported          15h 41m from MediaMTX /list
+  on disk           15h 45m implied by size at 52.0 kB/s
+  discrepancy       -4m 14s (-0.45%)
+
+measure: time to first frame (median of 5, yard)
+  whep post         25 ms
+  first frame       795 ms
+```
+
+**65.35% is a bad number and it is the real one.** The seven-hour hole at 02:08
+is a laptop that went to sleep; the 37-minute and 30-minute holes are the same
+machine doing other things. This is not what the recorder does on a box that
+stays awake — but publishing 99.9% from a cherry-picked window would defeat the
+only purpose the number has.
+
+The two gaps labelled `camera_down` are the interesting ones. `stream_events`
+records up/down *transitions* — the poller writes a row when the state changes,
+not on every 10-second tick — so a gap that overlaps a `down` event can be
+explained. The last one is reproducible in ninety seconds:
+`docker compose stop fakecam`, wait, `docker compose start fakecam`, re-run
+`measure`, and the outage appears with its real duration and its cause. The three
+`unknown` gaps are honest too: the API was down for those, so nothing was
+watching, and the system says so rather than guessing.
+
+### The method, and the 2-second tolerance
+
+MediaMTX's playback `/list` returns contiguous timespans. Those get merged, the
+complement within the window is the gaps, and coverage is
+`1 - gapTime / windowTime`. All of it in epoch milliseconds UTC
+([why](docs/ARCHITECTURE.md#timeline-gaps-and-coverage)); wall-clock strings are
+produced once, at the render boundary.
+
+Merging needs a tolerance, and the value is load-bearing. Consecutive segments
+inside a single uninterrupted run are separated by a few hundred milliseconds of
+muxer boundary. With no tolerance the timeline is confetti-ed with hundreds of
+meaningless holes; with too generous a tolerance real outages vanish into the
+smoothing. **`TOLERANCE_MS = 2000`** — under two seconds is a muxer artefact,
+over two seconds is a hole in the record. It is unit-tested at, just under, and
+just over the boundary, and the whole module is pure functions over numbers, so
+those tests are cheap.
+
+Two consequences worth knowing. Coverage is computed exactly while the printed
+gap table drops sub-tolerance holes, so coverage can sit a hair under 1 with an
+empty table — the two are never derived from each other. And spans are half-open
+`[start, end)`, so the instant at a span's end belongs to the gap after it.
+
+### Reported vs. on disk
+
+MediaMTX's reported timespan durations can disagree with what is actually on
+disk, most visibly on the segment currently being written. Rather than trust
+them, `measure` builds a second estimate the reported durations had no part in:
+a complete segment is `recordSegmentDuration` long, so the *median* segment size
+divided by ten minutes is a bytes-per-second derived purely from the filesystem.
+Running the total bytes back through it gives the `on disk` figure above. The two
+agreed to within half a percent here; the run prints the discrepancy either way
+instead of picking a winner.
+
+That is also why segments are ten minutes rather than the one-hour default — a
+wrong duration misplaces at most ten minutes.
+
+`doctor` is the setup-time counterpart: it probes both RTSP URLs (printing them
+with the password hash masked), measures the real bitrate with a ten-second
+sample, and refuses to pass if the main stream is H.265, if the sub-stream is not
+H.264, or if the measured bitrate fills the disk before `recordDeleteAfter`
+expires. Both scripts exit non-zero on a failed check, so either can gate a
+deployment. Both need a real camera and real elapsed time, so neither runs in CI.
 
 ## What I deliberately didn't build
 

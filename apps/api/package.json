@@ -35,6 +35,7 @@
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.5",
     "eslint-config-prettier": "10.1.8",
+    "playwright-core": "1.62.1",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.68.0",
