@@ -7,26 +7,16 @@
 
 import { createLocalAccountIssuer } from '@better-auth/core/db'
 import { auth } from '../auth'
+import { cameraUrls, maskRtsp } from '../camera'
 import { db, sql } from './index'
 import { cameras } from './schema'
 
 const email = Bun.env.SEED_OPERATOR_EMAIL ?? 'operator@ronda.local'
 const password = Bun.env.SEED_OPERATOR_PASSWORD ?? 'ronda-operator'
 
-// Same guard as scripts/render-mediamtx.ts, for the same reason: md5('') is
-// d41d8cd98f00b204e9800998ecf8427e — a real-looking hash for a missing
-// password, which would store a URL that looks right and never connects.
-const cameraIp = Bun.env.CAMERA_IP ?? ''
-const onvifPassword = Bun.env.ONVIF_PASSWORD ?? ''
-
-const missing = (
-  [
-    ['CAMERA_IP', cameraIp],
-    ['ONVIF_PASSWORD', onvifPassword],
-  ] as const
-)
-  .filter(([, value]) => value === '')
-  .map(([name]) => name)
+// Same guard as scripts/render-mediamtx.ts, for the same reason: an empty
+// source stores a URL that looks right and never connects.
+const { main, sub, missing } = cameraUrls()
 
 if (missing.length > 0) {
   console.error(
@@ -36,12 +26,9 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
-// The BARDI-family path is rtsp://<ip>:5543/<md5(onvif_password)>/live/channelN
-// (docs/ARCHITECTURE.md#the-media-pipeline). mediamtx.template.yml is the
-// source of truth for that shape; this builds the same URL so the row and the
-// recorder agree.
-const hash = new Bun.CryptoHasher('md5').update(onvifPassword).digest('hex')
-const rtsp = (channel: 0 | 1) => `rtsp://${cameraIp}:5543/${hash}/live/channel${channel}`
+// The same two URLs the recorder is configured with, read from the same two
+// variables, so the database row and mediamtx.yml cannot disagree about where
+// the camera is (docs/ARCHITECTURE.md#the-media-pipeline).
 
 // Sign-up is disabled, so auth.api.signUpEmail would refuse. This is the exact
 // path Better Auth's own sign-up route takes once it is past that check —
@@ -77,27 +64,40 @@ if (!found) {
   console.log(`seed: operator account already exists — ${email}`)
 }
 
+// Upsert, not insert-or-skip. .env is the source of truth for where the camera
+// is, and it changes: a camera gets a new address, or a whole URL shape turns
+// out to be wrong. onConflictDoNothing would leave the row pointing at the old
+// URL forever while mediamtx.yml pointed at the new one — and seed would print
+// the new URLs while having stored neither, which is the specific kind of quiet
+// disagreement this project exists to avoid.
+//
+// `name` is deliberately NOT updated: it is the operator's label for the
+// camera, not configuration, and re-seeding should not rename it back.
 const [camera] = await db
   .insert(cameras)
   .values({
     slug: 'yard',
     name: 'Yard',
-    rtspMain: rtsp(0), // recorded continuously
-    rtspSub: rtsp(1), // live view only
+    rtspMain: main, // recorded continuously
+    rtspSub: sub, // live view only
   })
-  .onConflictDoNothing({ target: cameras.slug })
-  .returning()
+  .onConflictDoUpdate({
+    target: cameras.slug,
+    set: { rtspMain: main, rtspSub: sub },
+  })
+  .returning({ id: cameras.id, createdAt: cameras.createdAt })
 
-console.log(camera ? "seed: camera 'yard' created" : "seed: camera 'yard' already exists")
+const fresh = camera !== undefined && Date.now() - camera.createdAt.getTime() < 5_000
+console.log(fresh ? "seed: camera 'yard' created" : "seed: camera 'yard' stream URLs updated")
 
 await sql.end()
 
 // Masked, like doctor and render:mediamtx (docs/ARCHITECTURE.md#measurement,
-// #the-trust-boundary): the path IS the password's MD5, so printing it leaks a
-// password hash.
+// #the-trust-boundary): a stream URL carries the camera's credentials, so
+// printing one in full leaks them.
 console.log('')
 console.log('  operator  ' + email)
 console.log('  password  ' + password)
 console.log('')
-console.log(`  yard      rtsp://${cameraIp}:5543/${'•'.repeat(8)}/live/channel0`)
-console.log(`  yard_sub  rtsp://${cameraIp}:5543/${'•'.repeat(8)}/live/channel1`)
+console.log(`  yard      ${maskRtsp(main)}`)
+console.log(`  yard_sub  ${maskRtsp(sub)}`)

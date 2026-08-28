@@ -52,11 +52,12 @@ export function joinStatus(rows: CameraRow[], paths: MediaMtxPath[] | null) {
 }
 
 export const camerasRoute = new Hono<SessionEnv>().get('/', requireSession, async (c) => {
-  // Columns named one by one, not select(): rtsp_main and rtsp_sub contain
-  // md5(ONVIF_PASSWORD) (docs/ARCHITECTURE.md#the-trust-boundary), so a
-  // select() here would put a password hash one JSON.stringify away from the
-  // browser. Naming them keeps the secret inside Postgres rather than trusting
-  // a later hand-written projection.
+  // Columns named one by one, not select(): rtsp_main and rtsp_sub are the
+  // camera's stream URLs and therefore carry its credentials
+  // (docs/ARCHITECTURE.md#the-trust-boundary), so a select() here would put a
+  // password one JSON.stringify away from the browser. Naming them keeps the
+  // secret inside Postgres rather than trusting a later hand-written
+  // projection.
   const rows = await db
     .select({ slug: cameras.slug, name: cameras.name, enabled: cameras.enabled })
     .from(cameras)

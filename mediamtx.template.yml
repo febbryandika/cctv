@@ -6,8 +6,9 @@
 # timeline arithmetic, and honesty about what was actually recorded.
 
 # This is the TRACKED source. `cd apps/api && bun run render:mediamtx` renders
-# it to mediamtx.yml, filling in ${CAMERA_IP} and ${ONVIF_PASSWORD_MD5} from
-# .env. The rendered file is gitignored because that hash is a password hash
+# it to mediamtx.yml, filling in CAMERA_RTSP_MAIN and CAMERA_RTSP_SUB from
+# .env. The rendered file is gitignored because a stream URL is a credential:
+# it carries either a password in userinfo or md5(password) in the path
 # (docs/ARCHITECTURE.md#the-trust-boundary).
 
 logLevel: info
@@ -102,11 +103,12 @@ paths:
   # Main stream: high resolution, recorded continuously, never watched
   # directly — so a viewer can never disturb the recording.
   #
-  # This `source` is the real camera. Docker Compose overrides it to
-  # `publisher` via MTX_PATHS_YARD_SOURCE so the fake camera can publish to
-  # this same path — a path cannot both pull a source and accept a publisher.
+  # This `source` is the real camera, pasted from what the camera itself
+  # reports (see .env.example). Docker Compose overrides it to `publisher` via
+  # MTX_PATHS_YARD_SOURCE so the fake camera can publish to this same path — a
+  # path cannot both pull a source and accept a publisher.
   yard:
-    source: rtsp://${CAMERA_IP}:5543/${ONVIF_PASSWORD_MD5}/live/channel0
+    source: ${CAMERA_RTSP_MAIN}
     sourceOnDemand: no # must record whether or not anyone is watching
     record: yes
     recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
@@ -118,20 +120,17 @@ paths:
   # something actually watches it, so it does not spam connection errors the way
   # a `no` would.
   #
-  # This source is a token, unlike `yard` above, because development has no
-  # camera to pull channel1 from and fakecam only feeds `yard`. It cannot be
-  # overridden the way `yard` is: an MTX_PATHS_* variable cannot address a path
-  # whose name contains an underscore, so MTX_PATHS_YARD_SUB_SOURCE is read as
-  # path `yard` key `sub_source` and silently dropped. The substitution is done
-  # by render-mediamtx.ts instead, which explains it at more length.
+  # This is a token rather than an MTX_PATHS_* override because no such override
+  # can address it: MediaMTX splits path names on `_`, so
+  # MTX_PATHS_YARD_SUB_SOURCE is read as path `yard` key `sub_source` and
+  # silently dropped. Verified against v1.20.1 — an equivalent `yardsub` path
+  # takes the override and `yard_sub` does not, and neither `__` nor lowercase
+  # escapes it. The substitution is done by render-mediamtx.ts instead.
   #
-  # Unset YARD_SUB_SOURCE renders exactly the line this replaced — the same
-  # camera URL as `yard` above, on channel1 instead of channel0. (Spelled out
-  # rather than written as a token: the renderer substitutes comments too, and
-  # repeating the hash here would put it in the generated file twice.)
-  # .env.example sets it to rtsp://localhost:8554/yard, so MediaMTX relays its
-  # own main path on demand and live view has something to show with no camera.
+  # In development, point CAMERA_RTSP_SUB at rtsp://localhost:8554/yard so
+  # MediaMTX relays its own main path on demand: live view then has something to
+  # show with no camera, no second ffmpeg and no transcode.
   yard_sub:
-    source: ${YARD_SUB_SOURCE}
+    source: ${CAMERA_RTSP_SUB}
     sourceOnDemand: yes
     record: no

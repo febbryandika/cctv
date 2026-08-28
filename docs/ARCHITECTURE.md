@@ -136,10 +136,15 @@ exposed:
 - **Sessions are httpOnly cookies** (Better Auth), CORS restricted to the web
   origin with `credentials: true`. Sign-up is disabled; the single operator
   account is created by `db:seed`.
-- **The RTSP path is the password's MD5.** On this camera family the URL is
-  `rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0`, so a leaked stream URL
-  leaks a password hash. That is why the rendered `mediamtx.yml` is gitignored
-  while the template is tracked, and why `doctor` masks the hash when printing.
+- **A stream URL is a credential.** There is no single URL shape: one camera in
+  this family serves `rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0`,
+  another serves `rtsp://<user>:<pass>@<ip>:554/V_ENC_000` on the standard port
+  with credentials in userinfo. Either way the URL carries the secret, so it is
+  configured explicitly in `.env` (`CAMERA_RTSP_MAIN` / `CAMERA_RTSP_SUB`) and
+  never derived from a guessed template — a wrong guess renders a config that
+  starts cleanly and never connects. That is why the rendered `mediamtx.yml` is
+  gitignored while the template is tracked, and why `doctor`, `seed` and
+  `render:mediamtx` all mask both shapes when printing.
 - **The web app never holds a database credential.** It talks to the API; the
   API talks to Postgres.
 - **WHEP session ids are mapped to the session that created them**, and `PATCH`
