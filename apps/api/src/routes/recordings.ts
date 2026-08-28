@@ -1,9 +1,9 @@
-import { and, desc, eq, gte, lt } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db } from '../db'
-import { cameras, streamEvents } from '../db/schema'
+import { cameras } from '../db/schema'
 import { clipUrl, listTimespans, MediaMtxError } from '../mediamtx/client'
 import { rateLimit } from '../middleware/rate-limit'
 import { requireSession, type SessionEnv } from '../middleware/session'
@@ -20,6 +20,7 @@ import {
   type Span,
   type StreamEvent,
 } from '../timeline/coverage'
+import { loadEvents } from '../timeline/events'
 
 // The epoch-ms -> RFC3339 boundary for the response, and the only one in this
 // file. Everything above it is epoch milliseconds UTC
@@ -114,45 +115,6 @@ async function findCamera(slug: string) {
     .limit(1)
 
   return camera?.enabled ? camera : null
-}
-
-// The poller writes TRANSITIONS only (docs/ARCHITECTURE.md#data), so the events
-// inside a window are not the whole story: a camera that went down at 22:00
-// yesterday and is still down leaves today's window with no event in it at all,
-// and inferCause - which only matches an event inside the gap - would call the
-// resulting all-day outage `unknown`. The one gap most worth labelling would be
-// the one guaranteed to be mislabelled.
-//
-// So the state at the window's start is carried forward from the last
-// transition before it. That is reading a known fact forward, not inventing a
-// cause: if the last thing the poller saw was `down`, the camera was down when
-// the window opened.
-async function loadEvents(slug: string, from: number, to: number): Promise<StreamEvent[]> {
-  const rows = await db
-    .select({ kind: streamEvents.kind, at: streamEvents.at })
-    .from(streamEvents)
-    .where(
-      and(
-        eq(streamEvents.cameraSlug, slug),
-        gte(streamEvents.at, new Date(from)),
-        lt(streamEvents.at, new Date(to)),
-      ),
-    )
-    .orderBy(streamEvents.at)
-
-  const [previous] = await db
-    .select({ kind: streamEvents.kind })
-    .from(streamEvents)
-    .where(and(eq(streamEvents.cameraSlug, slug), lt(streamEvents.at, new Date(from))))
-    .orderBy(desc(streamEvents.at))
-    .limit(1)
-
-  // row.at.getTime() is the Date -> epoch-ms conversion, and it happens exactly
-  // here. A Date must never reach timeline/. The `new Date(from)` above is the
-  // mirror image and never leaves this function.
-  const inWindow: StreamEvent[] = rows.map((row) => ({ kind: row.kind, at: row.at.getTime() }))
-
-  return previous?.kind === 'down' ? [{ kind: 'down', at: from }, ...inWindow] : inWindow
 }
 
 // Pure: timespans, events and a clock in, response body out. No I/O and no

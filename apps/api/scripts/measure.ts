@@ -10,10 +10,10 @@
 // and real elapsed time, so it stays manual and out of CI. Exits non-zero when a
 // number misses its target, so it can gate a deployment.
 
-import { and, desc, eq, gte, lt } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { chromium } from 'playwright-core'
 import { db, sql } from '../src/db'
-import { cameras, streamEvents } from '../src/db/schema'
+import { cameras } from '../src/db/schema'
 import { listTimespans } from '../src/mediamtx/client'
 import {
   TOLERANCE_MS,
@@ -23,8 +23,8 @@ import {
   inferCause,
   merge,
   type Span,
-  type StreamEvent,
 } from '../src/timeline/coverage'
+import { loadEvents } from '../src/timeline/events'
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
 
@@ -94,37 +94,6 @@ async function freeBytes(dir: URL): Promise<number> {
   const line = (await run(['df', '-Pk', Bun.fileURLToPath(dir)])).trim().split('\n').at(-1) ?? ''
   const available = line.split(/\s+/)[3]
   return available === undefined ? 0 : Number(available) * 1024
-}
-
-// The repository boundary: Date in, epoch milliseconds out, and nothing below
-// this line ever sees a Date (docs/ARCHITECTURE.md#timeline-gaps-and-coverage).
-//
-// The carry-forward is not optional. inferCause only matches a `down` event
-// INSIDE the gap, so an outage that began before the window opened would leave
-// its gap reading `unknown` — precisely the biggest outage, reported as the
-// least explicable.
-async function loadEvents(slug: string, window: Span): Promise<StreamEvent[]> {
-  const rows = await db
-    .select({ kind: streamEvents.kind, at: streamEvents.at })
-    .from(streamEvents)
-    .where(
-      and(
-        eq(streamEvents.cameraSlug, slug),
-        gte(streamEvents.at, new Date(window.start)),
-        lt(streamEvents.at, new Date(window.end)),
-      ),
-    )
-    .orderBy(streamEvents.at)
-
-  const [previous] = await db
-    .select({ kind: streamEvents.kind })
-    .from(streamEvents)
-    .where(and(eq(streamEvents.cameraSlug, slug), lt(streamEvents.at, new Date(window.start))))
-    .orderBy(desc(streamEvents.at))
-    .limit(1)
-
-  const inWindow: StreamEvent[] = rows.map((row) => ({ kind: row.kind, at: row.at.getTime() }))
-  return previous?.kind === 'down' ? [{ kind: 'down', at: window.start }, ...inWindow] : inWindow
 }
 
 // Segment files are weighed, never parsed for their timestamps. MediaMTX writes
@@ -383,7 +352,7 @@ for (const camera of enabled) {
     continue
   }
 
-  const events = await loadEvents(camera.slug, window)
+  const events = await loadEvents(camera.slug, window.start, window.end)
 
   // coverage() is exact; the printed table drops sub-tolerance holes, so it can
   // sit a hair under 1 with an empty table. Never re-derive one from the other.

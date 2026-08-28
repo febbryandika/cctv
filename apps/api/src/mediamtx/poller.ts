@@ -47,6 +47,38 @@ let polling = false
 // so the handle would be dead weight.
 let started = false
 
+// What /health/events streams to the browser. `at` is the DETECTION instant the
+// row was written with, epoch ms - not readyTime, for the reason spelled out at
+// the insert below.
+export type Emitted = Transition & { at: number }
+
+// In-process pub/sub, and it only works because the poller and the API are the
+// same process. That is the SPEC 2.3 argument for a separate API server showing
+// up as a feature rather than as a cost: a long-lived job here is plain module
+// code, and an SSE handler can subscribe to it with no broker in between.
+const listeners = new Set<(event: Emitted) => void>()
+
+/** Listen for transitions as they are recorded. Returns an unsubscribe. */
+export function subscribe(listener: (event: Emitted) => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+// One listener's failure must not take the poller - or any other listener -
+// down with it. A dropped SSE frame is a page that refreshes a beat late; an
+// unhandled rejection inside setInterval is a camera that stops being watched.
+function emit(event: Emitted): void {
+  for (const listener of listeners) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error('poller: transition listener failed -', error)
+    }
+  }
+}
+
 // Enabled cameras and the last transition recorded for each, read ONCE per
 // process. This is what makes an API restart quiet: the poller compares against
 // what is already in the table rather than against a blank slate, so restarting
@@ -183,6 +215,12 @@ export async function pollOnce(): Promise<void> {
         // something the poller actually observed.
         known.set(slug, kind)
         console.log(`poller: ${slug} ${kind}`)
+
+        // AFTER the insert resolves and after known.set, never before. A
+        // subscriber told about a transition that was not persisted would put
+        // the health page and stream_events into disagreement, and
+        // stream_events is the audit trail - it wins.
+        emit({ slug, kind, detail, at: at.getTime() })
       } catch (error) {
         console.error(`poller: could not record ${slug} ${kind} -`, error)
       }
@@ -199,15 +237,10 @@ export async function pollOnce(): Promise<void> {
 // re-reads the last kind from Postgres, so in-memory state comes back
 // consistent - editing a file mid-outage cannot produce a duplicate `down`.
 export function startPoller(): void {
-  // process.env.VITEST, set by the runner itself, is the only thing between a
-  // poller and a hung test suite. smoke.test.ts imports ./index and mocks
-  // NOTHING, so without this a vitest worker dials MediaMTX, opens a postgres
-  // socket to whatever DATABASE_URL resolves to - vitest loads no env file -
-  // and then holds an interval that keeps the event loop alive past teardown.
-  // A test-runner check in production code is a real cost and this is cheaper
-  // than that failure. When the nightly snapshot (build order 11) needs the
-  // same guard, move both behind a src/server.ts entrypoint and delete this.
-  if (process.env.VITEST) return
+  // No test-runner check here any more. This is called only from src/server.ts,
+  // which nothing under test imports - smoke.test.ts imports ./index, which is
+  // now the app and nothing else. That entrypoint split is what replaced the
+  // `process.env.VITEST` branch this function used to open with.
   if (started) return
   started = true
 

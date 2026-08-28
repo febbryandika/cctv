@@ -435,7 +435,7 @@ function LegendKey({ className, label }: { className: string; label: string }) {
  * decimals, and a perfect score printed beside visible holes is precisely the
  * contradiction this page exists to avoid.
  */
-function formatCoverage(coverage: number, hasGaps: boolean): string {
+export function formatCoverage(coverage: number, hasGaps: boolean): string {
   const percent = coverage * 100
   if (hasGaps && percent > 99.99) return '>99.99%'
   return `${percent.toFixed(2)}%`

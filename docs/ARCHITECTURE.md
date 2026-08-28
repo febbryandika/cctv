@@ -42,7 +42,11 @@ Two supporting reasons, in honest order of weight:
    not request-scoped. In a long-lived Bun process that is module-level code. In
    Next it is a lifecycle hook plus a `globalThis` guard to survive dev HMR
    restarting the poller on every edit — workable, but a workaround for a shape
-   mismatch.
+   mismatch. Both start from `src/server.ts`, which is the entrypoint; `src/index.ts`
+   is the app and its type and starts nothing, so importing it — as the test suite
+   does, and as the web app's typecheck does — opens no socket and holds no timer.
+   The health page's SSE feed then subscribes to the poller in-process, with no
+   broker in between, which is the same argument paying out a second time.
 2. **Footprint.** ~40–80 MB resident against ~200–400 MB. The reference box runs
    other things.
 
@@ -186,8 +190,6 @@ database credential — it talks to the API, the API talks to Postgres.
 | `GET` | `/recordings/:slug/clip` | proxied playback window, `Range`-aware |
 | `GET` | `/health` | disk free, days remaining, 24h coverage |
 | `GET` | `/health/events` | SSE — status transitions as they happen |
-
-*`/health` is designed but not yet built.*
 
 The web app builds a fully typed client from a **type-only** import of the API's
 `AppType`. Nothing crosses that boundary at runtime, but it does mean the web
@@ -378,9 +380,31 @@ No Prometheus, no Grafana; one camera does not need a metrics stack.
   every 10 seconds and writes a row only when the answer changes.
 - **`daily_coverage`** is the long memory. Recordings are deleted after the
   retention window; the record of how reliable the system was should outlive
-  them.
+  them. A nightly job writes the previous camera-local day and upserts against
+  the `(camera_slug, day)` constraint, so re-running a day overwrites rather than
+  duplicating — the constraint enforces it, not the application remembering to.
+  It also runs at boot, which is what makes a process that was down at midnight
+  self-healing. Two bounds keep it honest: it writes nothing at all when there is
+  no footage on disk, because fabricating `coverage: 0` for days before the
+  system existed would put an invented outage in the one table meant to be the
+  record; and it skips the oldest day, which retention has already half-erased
+  and which would otherwise overwrite an accurate row with a truncated one every
+  night until it aged out.
 - **`/health/events`** pushes transitions to the health page over SSE, so a
   watching operator sees a drop when it happens rather than at the next refresh.
+  Two things there are load-bearing and silent when wrong. `Bun.serve` defaults
+  to a 10-second `idleTimeout` and closes any connection that has moved no data
+  since — which for a quiet event stream is every connection — so the server sets
+  it explicitly and the handler sends a keepalive well inside it. And the browser
+  must open the stream with `withCredentials`, for the same reason the clip
+  player needs `crossOrigin`: the API is a separate origin, so without it the
+  route answers 401 and the page simply never updates.
+
+- **`/health`'s days-remaining is measured**, projected from bytes actually
+  written in the last 24 hours rather than from `recordDeleteAfter`. The failure
+  it exists to catch is a bitrate that drifted up until the disk fills days
+  before the configured window expires, which a number read out of the config
+  cannot see.
 
 Three decisions in the poller are load-bearing and none of them are obvious from
 the code alone:

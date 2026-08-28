@@ -119,6 +119,18 @@ export const todayLocalDay = (): string => localDay(Date.now())
 /** A camera-local calendar day, spelled out for a human. */
 export const formatDay = (day: string): string => dateFormat.format(new Date(localMidnightMs(day)))
 
+// Short enough to sit under a bar in a two-week strip, where the year is
+// implied and the weekday is noise.
+const shortDayFormat = new Intl.DateTimeFormat('en-GB', {
+  timeZone: CAMERA_TZ,
+  day: 'numeric',
+  month: 'short',
+})
+
+/** A camera-local calendar day as `21 Aug`, for a chart axis. */
+export const formatShortDay = (day: string): string =>
+  shortDayFormat.format(new Date(localMidnightMs(day)))
+
 /** Seconds as the shortest unambiguous human phrase: 45s, 22m 50s, 4h 28m. */
 export function humanDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
