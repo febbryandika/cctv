@@ -40,8 +40,31 @@ export default defineConfig({
     {
       name: 'chromium-signed-in',
       testMatch: '**/signed-in/**/*.spec.ts',
+      // gap.spec.ts is deliberately excluded - see the project below.
+      testIgnore: '**/gap.spec.ts',
       use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
       dependencies: ['setup'],
+    },
+
+    // The gap spec runs last, in its own project, because it is the only one
+    // that leaves the system permanently different: the outage it creates stays
+    // in the day's timeline for every spec after it.
+    //
+    // That is not hypothetical. A gap's hit target has a 14px minimum width, so
+    // a 20-second outage plants a 14px button in the middle of the bar - and on
+    // a fresh CI machine, where the whole day holds only minutes of footage, it
+    // covers the very span timeline-zoom.spec.ts needs to put a cursor over.
+    // Its wheel event then lands on the button instead of the track and nothing
+    // zooms.
+    //
+    // A dependency rather than alphabetical luck, so the ordering is stated
+    // rather than inherited from a filename. If the suite it depends on fails
+    // this is reported as skipped - which is honest, and the run is already red.
+    {
+      name: 'chromium-gap',
+      testMatch: '**/signed-in/gap.spec.ts',
+      use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
+      dependencies: ['chromium-signed-in'],
     },
   ],
   // Only the web app. The signed-in specs also need the Hono API, Postgres and
