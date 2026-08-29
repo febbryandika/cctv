@@ -9,10 +9,16 @@ const BASE_URL = `http://localhost:${PORT}`
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  // One camera, one fixture, one machine. e2e/signed-in/gap.spec.ts stops the
+  // fake camera to make a real recording gap, and while it is stopped the live
+  // view and the timeline every other spec reads have nothing behind them.
+  // Nothing here is slow enough for parallelism to be worth that race.
+  workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  reporter: 'list',
+  // `list` prints to the terminal and writes nothing, so on CI it would leave
+  // the failure artifact upload with an empty directory to collect.
+  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: BASE_URL,
     trace: 'on-first-retry',
@@ -40,9 +46,16 @@ export default defineConfig({
   ],
   // Only the web app. The signed-in specs also need the Hono API, Postgres and
   // Docker Compose, which are a developer's `docker compose up -d` rather than
-  // something this config can conjure - CI wiring waits for build order step 12.
+  // something this config can conjure - the `e2e` job in
+  // .github/workflows/ci.yml stands all of it up on pull requests.
   webServer: {
-    command: `pnpm exec next dev --port ${PORT}`,
+    // `next dev` compiles each route on its first request, and a cold compile
+    // on a shared runner can outlast an expect() timeout - a flake that looks
+    // like a missing element. CI serves the build the `web` job already
+    // validates; locally `next dev` keeps the edit loop.
+    command: process.env.CI
+      ? `pnpm exec next start --port ${PORT}`
+      : `pnpm exec next dev --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

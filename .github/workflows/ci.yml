@@ -73,5 +73,123 @@ jobs:
       - run: pnpm format:check
       - run: pnpm build
 
-  # TODO(build order step 12): Playwright against Docker Compose, with TZ set
-  # explicitly. Needs the fake-camera fixture, so it waits for step 1.
+  # Playwright against the real stack: Compose, a seeded database, the API
+  # process and a browser. Pull requests only - it costs minutes, and a push to
+  # main runs the two jobs above on a commit this already gated.
+  e2e:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Explicit, not inherited (SPEC 11). Everything the timeline computes is
+      # epoch-ms UTC by design, but the API process and drizzle-kit both read
+      # TZ, and a suite that only ever ran under the runner's UTC would not be
+      # running what a developer runs. Asia/Jakarta is what .env.example ships.
+      TZ: Asia/Jakarta
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # .env.example already points at the Compose Postgres, ships the seeded
+      # operator credentials the suite defaults to, and lists localhost:3100 -
+      # Playwright's port - in WEB_ORIGIN, so a clean clone needs no edits.
+      #
+      # It also leaves MTX_PATHS_YARD_SOURCE commented out, so Compose
+      # interpolates the `publisher` default and fakecam is what publishes
+      # `yard`. That is what makes the gap test meaningful here:
+      # e2e/signed-in/gap.spec.ts hard-fails on CI if `yard` is pulled from a
+      # real camera instead, because stopping fakecam would then prove nothing.
+      #
+      # drizzle.config.ts loads this same file from the repo root, so it has to
+      # exist before db:migrate as well as before `docker compose up`.
+      - name: Configure
+        run: |
+          cp .env.example .env
+          mkdir -p recordings
+
+      # Both installs, for the reason the `web` job documents: apps/web
+      # typechecks a type-only import of apps/api/src/index and resolves its
+      # dependencies out of apps/api/node_modules. This job additionally RUNS
+      # the API.
+      - run: bun install --frozen-lockfile
+        working-directory: apps/api
+
+      # mediamtx.yml is generated and gitignored; Compose deliberately fails on
+      # the bind mount if it does not exist, rather than starting MediaMTX on
+      # its defaults with recording off.
+      - run: bun run render:mediamtx
+        working-directory: apps/api
+
+      - run: docker compose up -d
+
+      - name: Wait for the stack
+        run: |
+          wait_for() {
+            timeout "$1" bash -c "until $2; do sleep 2; done" \
+              || { echo "::error::timed out waiting for $3"; exit 1; }
+          }
+          wait_for 120 'docker compose exec -T postgres pg_isready -U ronda -d ronda' 'postgres'
+          wait_for 120 'curl -sf http://127.0.0.1:9997/v3/paths/list > /dev/null' 'the mediamtx control API'
+          # `ready` AND published by a session - the same precondition
+          # gap.spec.ts refuses to run without - checked here so a broken
+          # fixture fails in a step that names it rather than inside a browser.
+          wait_for 120 'curl -sf http://127.0.0.1:9997/v3/paths/list | jq -e ".items[] | select(.name == \"yard\" and .ready and .source.type == \"rtspSession\")" > /dev/null' 'fakecam to publish yard'
+
+      - run: bun run db:migrate
+        working-directory: apps/api
+      - run: bun run db:seed
+        working-directory: apps/api
+
+      # src/server.ts, NOT `bun dev`: dev adds --watch, and more importantly the
+      # stream_events poller that turns a hole into `cause: camera_down` starts
+      # only from this entrypoint. src/index.ts is the app and starts nothing,
+      # so the gap test would see an honest `unknown` and fail.
+      - name: Start the API
+        working-directory: apps/api
+        run: |
+          nohup bun --env-file=../../.env src/server.ts > "$RUNNER_TEMP/api.log" 2>&1 &
+          timeout 60 bash -c 'until curl -sf http://127.0.0.1:3001/ > /dev/null; do sleep 1; done'
+
+      # The bar cannot draw a span MediaMTX has not written yet, and both
+      # journey.spec.ts and clip.spec.ts click the middle of one. Roughly thirty
+      # seconds of footage is enough to click into and arrives about that long
+      # after fakecam connects.
+      - name: Wait for recorded footage
+        run: |
+          timeout 180 bash -c 'until [ "$(curl -sf "http://127.0.0.1:9996/list?path=yard" | jq "[.[].duration] | add // 0 | floor")" -ge 30 ]; do sleep 2; done'
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: apps/web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/web
+      # playwright.config.ts serves `next start` under CI rather than `next dev`
+      # (a cold route compile can outlast an expect timeout), so the build has
+      # to exist before the suite starts its webServer.
+      - run: pnpm build
+        working-directory: apps/web
+
+      - run: pnpm exec playwright test
+        working-directory: apps/web
+
+      - name: Collect container logs
+        if: failure()
+        run: docker compose logs --no-color --timestamps > "$RUNNER_TEMP/compose.log" || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+            ${{ runner.temp }}/api.log
+            ${{ runner.temp }}/compose.log
+          retention-days: 7

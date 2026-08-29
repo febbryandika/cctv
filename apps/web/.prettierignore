@@ -5,3 +5,5 @@ playwright-report/
 test-results/
 next-env.d.ts
 pnpm-lock.yaml
+# Written by e2e/auth.setup.ts and gitignored: a real session cookie.
+e2e/.auth/

@@ -1,28 +1,68 @@
 # Ronda
 
-> **TODO:** one-line pitch, plus a GIF — live view, then scrubbing the timeline
-> into a recorded gap and back.
+Local CCTV for one ONVIF camera: sub-second live view in the browser, seven days
+of continuous recording, and a timeline that shows you the holes instead of
+hiding them.
 
-Local CCTV live view and recording for a single ONVIF camera.
+![Live view, then scrubbing the timeline into a recorded gap and back](docs/screenshots/ronda.gif)
 
 ---
 
 ## The problem
 
-> **TODO (2 sentences):** browsers cannot play RTSP, and a recorder that hides
-> its gaps is worse than no recorder.
+A browser cannot play RTSP — that is a protocol mismatch rather than a missing
+library, so something has to translate, and which translation you pick sets the
+latency floor at either half a second or eight.
+
+The second problem is the one that bites later: recording is not one continuous
+file but a sequence of segments with holes between them, and a timeline drawn as
+one unbroken bar is a claim about footage that may not exist. The moment you
+need it is the moment you find out. A recorder that hides its gaps is worse than
+no recorder, because it costs you the chance to fix the camera.
 
 ## Architecture
 
-> **TODO:** diagram — camera → MediaMTX → Hono → Next — plus a short
-> **"Why a separate API server?"** paragraph. An unexplained second process
-> reads as overengineering; an explained one reads as judgment.
+```
+  camera                MediaMTX                  Hono API              Next.js
+(ONVIF/RTSP)         (loopback only)               (Bun)                 (web)
+     │                     │                         │                     │
+     ├──── RTSP pull ─────►│                         │                     │
+     │                     │◄──── control API ───────┤                     │
+     │                     │◄──── playback API ──────┤                     │
+     │                     │◄──── WHEP signalling ───┤◄──── HTTP + ────────┤
+     │                     │                         │      session cookie │
+     │                     │═══════ WebRTC media, browser ↔ MediaMTX ══════►│
+     │                     ▼                         ▼
+     │              ./recordings/              Neon Postgres
+     │           fMP4, 10-min segments        auth · stream_events
+     │        the source of truth for          · daily_coverage
+     │            what was recorded         (never video, never paths)
+```
 
-```
-camera (ONVIF/RTSP) → MediaMTX (loopback only) → Hono API (Bun) → Next.js web
-                            ↓
-                      ./recordings/
-```
+Only signalling crosses the API; the media itself flows browser ↔ MediaMTX over
+ICE. MediaMTX binds to `127.0.0.1` on every port, so the authenticated API is
+the only way in ([the trust boundary](docs/ARCHITECTURE.md#the-trust-boundary)).
+
+### Why a separate API server?
+
+Because the two halves belong in different places, and it is cheaper to admit
+that now than to discover it later. The media server, the recordings and the
+disk are physically bound to the machine that can reach the camera; the UI
+eventually belongs wherever the operator is. Modelling that split as a process
+boundary today makes the later move a base-URL change instead of a rewrite.
+
+Two supporting reasons, in honest order of weight. The up/down poller and the
+nightly coverage snapshot are long-lived jobs — plain module-level code in a
+Bun process, versus a lifecycle hook plus a `globalThis` guard to survive HMR in
+a single Next app. And footprint: ~40–80 MB resident against ~200–400 MB, on a
+box that has other work to do.
+
+Notably absent from that list: SSR and React Server Components. Every page here
+is behind a login and renders live data, so Next's main advantage is simply
+unused — which is a reason not to *need* the single-process version, not a
+reason to reject it. Next.js full-stack would have been a perfectly good
+call; [the full argument is in
+ARCHITECTURE.md](docs/ARCHITECTURE.md#why-a-separate-api-server).
 
 ## How live view works
 
@@ -91,8 +131,43 @@ reaches the recorded path.
 
 ## How playback works
 
-> **TODO:** segments, timespans, and who does the stitching — MediaMTX, not us,
-> with the reason.
+**Segments.** MediaMTX writes fMP4 to `recordings/yard/` in ten-minute segments
+and deletes them after seven days. Ten minutes rather than the one-hour default
+for a specific reason: the durations the playback API reports can disagree with
+what is on disk, most visibly on the segment currently being written, so a
+shorter segment bounds that error to ten minutes instead of an hour.
+
+**Timespans.** Asking MediaMTX's playback API for `/list?path=yard` returns
+*timespans* — contiguous runs, already concatenated across the segment
+boundaries inside them. A new timespan begins wherever recording was
+interrupted, so **two timespans mean a hole between them**. That list is the
+only input the timeline has, and there is deliberately no database table
+shadowing it: the filesystem is the source of truth, and a second index would
+drift the first time a file was deleted out of band.
+
+**MediaMTX does the stitching, not us.** Asking it for a window by wall-clock
+time returns one continuous stream cut to those boundaries, spanning as many
+segments as it needs to. The reason to use that rather than write it is
+straightforward: the alternative is implementing an fMP4 muxer, and the payoff
+is a worse version of something that already works. The app never opens a video
+file. It does timeline arithmetic on the *list*, and proxies the bytes.
+
+The proxy has three narrow jobs, each of which is a bug if skipped. It **pipes**
+the body rather than buffering it — fine for a 300-second window in development,
+fatal the first time somebody asks for an hour. It **allowlists** response
+headers, because MediaMTX answers `/get` with `Access-Control-Allow-Origin: *`
+and a browser rejects a wildcard on a credentialed request. And it forwards
+`Range` and `206` even though today's MediaMTX ignores them on this endpoint —
+fidelity now is cheaper than a subtle regression later.
+
+One parameter is load-bearing: the clip is requested as `format=mp4`, not the
+`fmp4` default. fMP4 writes `mvhd.duration = 0`, so `<video>.duration` reads
+`Infinity` and the native scrubber never works — playback that looks perfect
+until somebody tries to seek.
+
+And a click that lands in a hole returns **409 with the nearest available
+span**, measured to the nearer edge, rather than an empty player with no
+explanation. That is the same honesty rule as the timeline, one layer down.
 
 ## Coverage
 
@@ -184,8 +259,57 @@ deployment. Both need a real camera and real elapsed time, so neither runs in CI
 
 ## What I deliberately didn't build
 
-> **TODO:** the non-goals with one-line reasons each. Highest-signal section in
-> the file.
+Each of these was considered and cut. The reason matters more than the cut.
+
+**No remote access to the media path.** No Tailscale, no WireGuard, no reverse
+proxy, no VPS. Traversing CGNAT to reach a home LAN is a genuinely separate
+problem with its own failure modes, and mixing it in here means never being sure
+whether a bug is in the app or in the tunnel. v1 runs on the LAN and is correct
+there first.
+
+The database is the one deliberate exception, and it costs something real: the
+API needs the internet to authenticate, so **an ISP outage stops anyone signing
+in to watch a camera five metres away.** Recording is unaffected — the camera
+and MediaMTX never touch the database — but nobody can watch. That is an
+acceptable trade for a v1 whose job is to be understood and extended, and it
+would not be acceptable for a system somebody relied on. The fix at that point
+is Postgres on the same machine: same schema, same migrations, different host.
+
+**No custom segment stitching.** MediaMTX already concatenates across segment
+boundaries and cuts on wall-clock time. Reimplementing it means writing an fMP4
+muxer — strictly more code to end up with strictly less reliable playback.
+
+**No segments table.** The filesystem plus MediaMTX's `/list` is the source of
+truth. A second index drifts the first time a file is deleted out of band, and a
+timeline that disagrees with the disk is worse than no timeline — it is the
+failure this project exists to avoid, reintroduced one layer down.
+
+**No motion or object detection.** MediaMTX does not do it, so adding it means a
+second pipeline — frame extraction, inference, an event store — that would
+dominate the project and compete for the CPU that currently just copies bytes.
+Continuous recording first; events are a different product.
+
+**No transcoding.** If the camera emits H.265 the recordings are smaller and
+unplayable in most browsers. That is surfaced as a warning by `doctor` and
+handled by recording the H.264 sub-stream for playback, rather than by running
+an ffmpeg farm on a machine that also has other jobs.
+
+**No RBAC, no multi-tenant.** One operator account, created by `seed`, with
+sign-up disabled. Camera-level permissions are a different project and would
+change the shape of every route.
+
+**No HLS fallback.** A second player path doubles the surface to test in
+exchange for a latency profile nobody wants on a live camera. HLS floors at
+roughly eight seconds because it is a playlist of segments and the player needs
+several buffered before it starts — the segmenting *is* the protocol, so no
+amount of tuning closes that gap. WebRTC covers every browser this targets.
+
+**No PTZ, no two-way audio.** The reference camera is fixed, and v1 records
+video only.
+
+**No deployment config.** v1 is `bun dev` on the LAN; Neon is the only hosted
+piece. Writing Dockerfiles and a compose stack for a topology that has not been
+decided yet would be guessing, and the guess would rot.
 
 ## Local setup
 
@@ -272,5 +396,25 @@ curl -s http://127.0.0.1:9997/v3/paths/list              # MediaMTX control API
 
 `apps/web` installs with **pnpm**, `apps/api` with **Bun**. This is not a
 workspace — two independent installs, wired only by a type-only import.
+
+### Running the tests
+
+```bash
+cd apps/api && bun run test          # Vitest — NOT `bun test`, which is Bun's own runner
+cd apps/web && pnpm exec playwright test
+```
+
+CI runs the unit suite under both `TZ=UTC` and `TZ=Asia/Jakarta`, because a
+timezone bug that only appears in one zone is exactly the bug that matters here.
+
+The browser suite needs the whole stack up — Compose, a migrated and seeded
+database, and `bun dev` running the API — because it plays real footage off real
+disk. It runs one worker at a time on purpose: `e2e/signed-in/gap.spec.ts` stops
+the fake camera to create a genuine recording gap, and while it is stopped there
+is nothing for the other specs to watch. That spec also **refuses to run** if
+`yard` is pulled from a real camera rather than published by `fakecam` — it
+would be stopping a container that is not the source of the recording, and would
+pass having proved nothing. It skips locally with an explanation and fails on
+CI.
 
 Open <http://localhost:3000>.

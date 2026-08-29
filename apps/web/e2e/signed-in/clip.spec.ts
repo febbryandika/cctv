@@ -1,21 +1,13 @@
-import { expect, test, type Locator } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { clickCentre } from '../helpers'
 
 // Build order step 8, the assertion the phase exists for: a click on a recorded
 // part of the timeline plays that moment back.
 //
 // Needs the whole local stack - the API, Postgres and Docker Compose - because
-// it plays real footage off real disk. `playwright.config.ts` starts only
-// `next dev`; CI wiring waits for build order step 12 along with the
-// stop-the-fake-camera gap test.
-
-// Clicks the centre of an element, which for a timeline span is a wall-clock
-// instant halfway through it.
-const clickCentre = async (element: Locator) => {
-  const box = await element.boundingBox()
-  expect(box, 'element has no box to click').not.toBeNull()
-
-  await element.page().mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2)
-}
+// it plays real footage off real disk. `playwright.config.ts` starts only the
+// web app; the `e2e` job in .github/workflows/ci.yml stands the rest up on
+// pull requests.
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/recordings')
@@ -73,8 +65,9 @@ test('the player asks the clip proxy for the instant that was clicked', async ({
 
 // SPEC 4.5: the click with no footage behind it gets an explanation and a way
 // out, never an empty <video>. Driven against the part of today that has not
-// happened yet, which exists on every run - unlike a recording gap, which needs
-// the fake camera stopped (build order step 9).
+// happened yet, which exists on every run - the same explanation over a real
+// recording gap is e2e/signed-in/gap.spec.ts, which has to stop the camera to
+// make one.
 test('a click with no footage explains itself and offers the nearest span', async ({ page }) => {
   const notElapsed = page.getByTestId('timeline-not-elapsed')
 
