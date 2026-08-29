@@ -9,10 +9,16 @@ const BASE_URL = `http://localhost:${PORT}`
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  // One camera, one fixture, one machine. e2e/signed-in/gap.spec.ts stops the
+  // fake camera to make a real recording gap, and while it is stopped the live
+  // view and the timeline every other spec reads have nothing behind them.
+  // Nothing here is slow enough for parallelism to be worth that race.
+  workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  reporter: 'list',
+  // `list` prints to the terminal and writes nothing, so on CI it would leave
+  // the failure artifact upload with an empty directory to collect.
+  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: BASE_URL,
     trace: 'on-first-retry',
@@ -34,15 +40,45 @@ export default defineConfig({
     {
       name: 'chromium-signed-in',
       testMatch: '**/signed-in/**/*.spec.ts',
+      // gap.spec.ts is deliberately excluded - see the project below.
+      testIgnore: '**/gap.spec.ts',
       use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
       dependencies: ['setup'],
+    },
+
+    // The gap spec runs last, in its own project, because it is the only one
+    // that leaves the system permanently different: the outage it creates stays
+    // in the day's timeline for every spec after it.
+    //
+    // That is not hypothetical. A gap's hit target has a 14px minimum width, so
+    // a 20-second outage plants a 14px button in the middle of the bar - and on
+    // a fresh CI machine, where the whole day holds only minutes of footage, it
+    // covers the very span timeline-zoom.spec.ts needs to put a cursor over.
+    // Its wheel event then lands on the button instead of the track and nothing
+    // zooms.
+    //
+    // A dependency rather than alphabetical luck, so the ordering is stated
+    // rather than inherited from a filename. If the suite it depends on fails
+    // this is reported as skipped - which is honest, and the run is already red.
+    {
+      name: 'chromium-gap',
+      testMatch: '**/signed-in/gap.spec.ts',
+      use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
+      dependencies: ['chromium-signed-in'],
     },
   ],
   // Only the web app. The signed-in specs also need the Hono API, Postgres and
   // Docker Compose, which are a developer's `docker compose up -d` rather than
-  // something this config can conjure - CI wiring waits for build order step 12.
+  // something this config can conjure - the `e2e` job in
+  // .github/workflows/ci.yml stands all of it up on pull requests.
   webServer: {
-    command: `pnpm exec next dev --port ${PORT}`,
+    // `next dev` compiles each route on its first request, and a cold compile
+    // on a shared runner can outlast an expect() timeout - a flake that looks
+    // like a missing element. CI serves the build the `web` job already
+    // validates; locally `next dev` keeps the edit loop.
+    command: process.env.CI
+      ? `pnpm exec next start --port ${PORT}`
+      : `pnpm exec next dev --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

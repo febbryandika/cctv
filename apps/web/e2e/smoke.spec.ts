@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test'
 
-// The authenticated walk through the nav returns in build order step 12, where
-// the harness already needs the API, Postgres and a seeded account — and where
-// e2e/.auth/ (already gitignored) holds the storage state.
+// These two assert what an unauthenticated visitor sees, so they run without a
+// session. The authenticated walk — signing in through this very form and
+// carrying on to live view and playback — is e2e/journey.spec.ts.
 test('signed out, the app shell redirects to sign-in', async ({ page }) => {
   await page.goto('/')
 
