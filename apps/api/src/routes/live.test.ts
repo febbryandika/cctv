@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { liveRoute, parseSessionId } from './live'
+import { livePath, liveRoute, parseSessionId } from './live'
 
 // Same three mocks as cameras.test.ts, same reasons: ../auth because
 // requireSession imports it and importing it for real opens a postgres pool at
@@ -309,4 +309,36 @@ describe('parseSessionId', () => {
     expect(parseSessionId('')).toBeNull()
     expect(parseSessionId('/yard_sub/whep/')).toBeNull()
   })
+})
+
+// The one function that decides which MediaMTX path a viewer can reach. It is
+// derived server-side and never sent by the browser, so the set of reachable
+// paths is exactly what this returns (docs/ARCHITECTURE.md#the-whep-proxy).
+describe('livePath', () => {
+  const original = process.env.LIVE_SOURCE
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.LIVE_SOURCE
+    else process.env.LIVE_SOURCE = original
+  })
+
+  it('resolves to the sub-stream by default, so watching cannot disturb the recording', () => {
+    delete process.env.LIVE_SOURCE
+    expect(livePath('yard')).toBe('yard_sub')
+  })
+
+  it('resolves to the recorded path only when LIVE_SOURCE is exactly "main"', () => {
+    process.env.LIVE_SOURCE = 'main'
+    expect(livePath('yard')).toBe('yard')
+  })
+
+  // Anything else is the safe default rather than a guess. A typo in .env must
+  // not silently point live view at the recorded path.
+  it.each(['sub', 'MAIN', 'Main', 'true', '1', ''])(
+    'falls back to the sub-stream for LIVE_SOURCE=%j',
+    (value) => {
+      process.env.LIVE_SOURCE = value
+      expect(livePath('yard')).toBe('yard_sub')
+    },
+  )
 })
