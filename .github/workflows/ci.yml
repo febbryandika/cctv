@@ -158,14 +158,6 @@ jobs:
           nohup bun --env-file=../../.env src/server.ts > "$RUNNER_TEMP/api.log" 2>&1 &
           timeout 60 bash -c 'until curl -sf http://127.0.0.1:3001/ > /dev/null; do sleep 1; done'
 
-      # The bar cannot draw a span MediaMTX has not written yet, and both
-      # journey.spec.ts and clip.spec.ts click the middle of one. Roughly thirty
-      # seconds of footage is enough to click into and arrives about that long
-      # after fakecam connects.
-      - name: Wait for recorded footage
-        run: |
-          timeout 180 bash -c 'until [ "$(curl -sf "http://127.0.0.1:9996/list?path=yard" | jq "[.[].duration] | add // 0 | floor")" -ge 30 ]; do sleep 2; done'
-
       - run: pnpm install --frozen-lockfile
         working-directory: apps/web
       - run: pnpm exec playwright install --with-deps chromium
@@ -175,6 +167,25 @@ jobs:
       # to exist before the suite starts its webServer.
       - run: pnpm build
         working-directory: apps/web
+
+      # journey.spec.ts and clip.spec.ts click the middle of a recorded span,
+      # and on a fresh runner the day is otherwise empty - so how MUCH footage
+      # exists decides whether that click is possible at all.
+      #
+      # The timeline draws a whole camera-local day across roughly 624px, so one
+      # pixel is about 138 SECONDS. A two-minute span is therefore under a single
+      # pixel wide, and clicking its centre resolves - after the browser
+      # quantises the coordinate - to an instant minutes away, landing in the
+      # adjacent gap. The test then fails reporting no video, which is true and
+      # entirely uninformative.
+      #
+      # Seven minutes makes the span ~3px, so a centre click has about three
+      # times the margin it needs. This step sits AFTER the installs and the
+      # build on purpose: fakecam has been recording throughout them, so most of
+      # the seven minutes is already banked and this usually returns at once.
+      - name: Wait for enough footage to be clickable
+        run: |
+          timeout 600 bash -c 'until [ "$(curl -sf "http://127.0.0.1:9996/list?path=yard" | jq "[.[].duration] | add // 0 | floor")" -ge 420 ]; do sleep 5; done'
 
       - run: pnpm exec playwright test
         working-directory: apps/web

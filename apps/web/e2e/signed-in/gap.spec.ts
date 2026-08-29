@@ -30,16 +30,16 @@ const EDGE_TOLERANCE_MS = 4_000
 // failing with "no gap found" and hiding the measurement.
 const SEARCH_MS = 15_000
 
-// Keep the camera down for at least this long before restarting it, even if the
-// poller has already explained the outage.
+// How long to hold the camera down.
 //
-// Without a floor the outage lasts only as long as step 4's poll takes, which
-// on a lucky tick is ~3s - technically above TOLERANCE_MS, but close enough to
-// it that the gap this test asserts on is barely distinguishable from the muxer
-// boundary the module is designed to erase. Twelve seconds is comfortably clear
-// of 2s, still shorter than the poller's worst-case 13s explanation, and keeps
-// the whole test under a minute.
-const MIN_OUTAGE_MS = 12_000
+// Two floors, and the larger wins. It must clear TOLERANCE_MS by enough that
+// the gap is unmistakably an outage rather than a muxer boundary. And it must
+// outlast the poller's worst case, because `cause` only becomes `camera_down`
+// when a `down` row lands INSIDE the gap: the poller ticks every 10s and
+// listPaths gives up after 3s, so a transition can be recorded up to ~13s after
+// the drop. Twenty seconds clears both with margin and keeps the test under a
+// minute.
+const MIN_OUTAGE_MS = 20_000
 
 const CAMERA_TZ = process.env.NEXT_PUBLIC_CAMERA_TZ ?? 'Asia/Jakarta'
 
@@ -144,19 +144,30 @@ test('an outage becomes a gap in the timeline, with its duration and its cause',
   //     The question is whether a gap is OPEN, not whether one happened
   //     recently. An open gap runs to window.end, which is `now`, so it is the
   //     one whose end never recedes. Asking the looser question - "no gap in the
-  //     last 30s" - would make this test unable to run twice in half a minute,
-  //     and with retries: 2 on CI a retry would then fail here rather than on
-  //     the thing it was retrying.
-  const before = await readTimeline(page, Date.now() - 10 * 60_000, Date.now())
-
-  expect(
-    before.spans.length,
-    'nothing has been recorded in the last ten minutes - is the fixture publishing?',
-  ).toBeGreaterThan(0)
-  expect(
-    before.gaps.filter((g) => Date.parse(g.end) > Date.now() - 3_000),
-    'recording is already interrupted - this test needs a running camera to stop',
-  ).toHaveLength(0)
+  //     last 30s" - would make this test unable to run twice in half a minute.
+  //
+  //     WAITS for that rather than asserting it, because the thing most likely
+  //     to have just interrupted recording is this test's own previous attempt:
+  //     afterEach restarts the camera, but MediaMTX needs a moment to cut a new
+  //     segment. Asserting here would make every retry fail on the setup rather
+  //     than on the thing it was retrying - and with retries: 2 on CI, that
+  //     turns one flake into three identical misleading failures.
+  await expect
+    .poll(
+      async () => {
+        const body = await readTimeline(page, Date.now() - 10 * 60_000, Date.now())
+        const open = body.gaps.some((g) => Date.parse(g.end) > Date.now() - 3_000)
+        return body.spans.length > 0 && !open
+      },
+      {
+        timeout: 60_000,
+        intervals: [1_000],
+        message:
+          'recording never resumed - this test needs a running camera to stop. ' +
+          'Is the fixture publishing? `docker compose up -d`',
+      },
+    )
+    .toBe(true)
 
   // 3 - Stop the camera.
   //
@@ -169,34 +180,26 @@ test('an outage becomes a gap in the timeline, with its duration and its cause',
   stoppedFakecam = true
   const stoppedAt = await waitForYard(false, 30_000)
 
-  // 4 - Wait for the outage to become EXPLICABLE, rather than for a fixed number
-  //     of seconds.
+  // 4 - The gap opens immediately, while the camera is still down.
   //
-  //     The poller ticks every 10s and writes transitions only, so the `down`
-  //     row that makes inferCause() answer `camera_down` lands somewhere in
-  //     [0, 13s] after the drop - the 10s interval plus listPaths's 3s
-  //     AbortSignal.timeout. Polling for the cause makes the wait and the
-  //     assertion the same thing, and it typically resolves in 5-13s rather than
-  //     the 30s a sleep would have to budget for.
-  //
-  //     While the camera is down the gap is OPEN - gaps() runs it to
-  //     window.end, which is `now` - so it appears after ~2s reading `unknown`
-  //     and flips to `camera_down` once the poller catches up. That flip is the
-  //     observable.
+  //     Only a sanity check that recording really was interrupted. The cause is
+  //     deliberately NOT asserted here: while the segment is still being
+  //     written its reported duration is at its least accurate
+  //     (docs/ARCHITECTURE.md#timeline-gaps-and-coverage, item 4), so the OPEN
+  //     gap's start can sit a few seconds later than the moment the camera
+  //     actually dropped - late enough to fall the wrong side of the poller's
+  //     `down` row and read `unknown` forever. Once the segment closes,
+  //     MediaMTX reports its true end and the question becomes answerable.
   await expect
-    .poll(async () => (await gapNear(page, stoppedAt))?.cause ?? 'no gap yet', {
-      timeout: 45_000,
-      intervals: [2_000],
-      message:
-        'the open gap never became camera_down. Is the API running from src/server.ts? ' +
-        'src/index.ts starts no poller, and with no `down` row the gap is honestly `unknown`.',
+    .poll(async () => (await gapNear(page, stoppedAt)) !== null, {
+      timeout: 30_000,
+      intervals: [1_000],
+      message: 'stopping the camera opened no gap in the timeline',
     })
-    .toBe('camera_down')
+    .toBe(true)
 
-  // 5 - Bring it back, but not before the outage is unambiguously an outage.
-  //     On a lucky poller tick step 4 returns in ~3s, which would leave this
-  //     asserting on a gap barely above the tolerance that exists to erase
-  //     muxer boundaries.
+  // 5 - Hold the outage open long enough to be unmistakable, and long enough
+  //     for the poller to have recorded the transition that explains it.
   const outstanding = MIN_OUTAGE_MS - (Date.now() - stoppedAt)
   if (outstanding > 0) await page.waitForTimeout(outstanding)
 
@@ -237,10 +240,26 @@ test('an outage becomes a gap in the timeline, with its duration and its cause',
   // The module's own rule, restated at the wire: under 2s this would have been
   // merged away as a muxer boundary and never reported at all.
   expect(gapEnd - gapStart).toBeGreaterThan(TOLERANCE_MS)
-  expect(gap.cause).toBe('camera_down')
 
   // Pins the route's own rounding, which no unit test covers at this boundary.
   expect(gap.durationSec).toBe(Math.round((gapEnd - gapStart) / 1000))
+
+  // And the half that proves stream_events and inferCause are wired to reality
+  // rather than to a fixture: the system can say WHY the footage is missing.
+  //
+  // Asserted only now that the gap has closed and its start is final. A short
+  // poll because the transition is written by a background job, not by anything
+  // this test awaited - the row is almost always in by here, having been
+  // recorded during the outage above.
+  await expect
+    .poll(async () => (await gapNear(page, stoppedAt))?.cause ?? 'no gap', {
+      timeout: 20_000,
+      intervals: [1_000],
+      message:
+        'the gap never became camera_down. Is the API running from src/server.ts? ' +
+        'src/index.ts starts no poller, and with no `down` row the gap is honestly `unknown`.',
+    })
+    .toBe('camera_down')
 
   // 7 - The claim, on screen.
   //
