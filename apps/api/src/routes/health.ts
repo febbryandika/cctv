@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm'
+import { and, gte, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { db } from '../db'
@@ -11,8 +11,8 @@ import { bytesIn, diskSpace, listSegments, type Segment } from '../timeline/disk
 
 // "Is this healthy right now, and will the disk last?" - the two questions the
 // timeline cannot answer (docs/ARCHITECTURE.md#observability). No Prometheus and
-// no metrics library: one camera does not need a metrics stack, and everything
-// here is a read the app was already able to do.
+// no metrics library: seven cameras on one machine do not need a metrics stack,
+// and everything here is a read the app was already able to do.
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 3_600_000
@@ -178,14 +178,27 @@ async function loadTimespans(slug: string): Promise<Span[] | null> {
   }
 }
 
-// One query per camera, ordered and limited by the database rather than by day
-// arithmetic here - which keeps every calendar-zone decision inside
-// timeline/snapshot.ts, where it is tested under both zones. N is the number of
-// cameras and the app seeds one; if N ever grows this is the place to make it a
-// single windowed query.
-async function loadHistory(slug: string): Promise<HistoryRow[]> {
+// One query for every camera, which is what the per-camera version said to do
+// here once N grew past one. The shape is deliberate in two ways.
+//
+// The lower bound is a UTC date two days wider than HISTORY_DAYS. `day` is a
+// camera-local calendar day written by timeline/snapshot.ts and this file does
+// not own that zone, so the bound is only ever used to keep the scan small -
+// the actual selection is the per-camera slice by COUNT below, which no zone
+// can shift. Widening rather than converting is what keeps every calendar
+// decision inside snapshot.ts, where it is tested under both zones.
+//
+// And the trim is per camera, because the old LIMIT was: one query with a
+// global LIMIT would return fourteen rows in total and leave six cameras blank.
+async function loadHistory(slugs: string[], now: number): Promise<Map<string, HistoryRow[]>> {
+  const history = new Map<string, HistoryRow[]>()
+  if (slugs.length === 0) return history
+
+  const from = new Date(now - (HISTORY_DAYS + 2) * 86_400_000).toISOString().slice(0, 10)
+
   const rows = await db
     .select({
+      cameraSlug: dailyCoverage.cameraSlug,
       day: dailyCoverage.day,
       coverage: dailyCoverage.coverage,
       gapCount: dailyCoverage.gapCount,
@@ -193,13 +206,20 @@ async function loadHistory(slug: string): Promise<HistoryRow[]> {
       bytesWritten: dailyCoverage.bytesWritten,
     })
     .from(dailyCoverage)
-    .where(eq(dailyCoverage.cameraSlug, slug))
-    .orderBy(desc(dailyCoverage.day))
-    .limit(HISTORY_DAYS)
+    .where(and(inArray(dailyCoverage.cameraSlug, slugs), gte(dailyCoverage.day, from)))
+    // Oldest-first, so the browser can draw it left to right and the slice
+    // below takes the newest end.
+    .orderBy(dailyCoverage.cameraSlug, dailyCoverage.day)
 
-  // Newest-first out of the database so LIMIT takes the right end; oldest-first
-  // into the response so the browser can draw it left to right.
-  return rows.reverse()
+  for (const { cameraSlug, ...row } of rows) {
+    history.set(cameraSlug, [...(history.get(cameraSlug) ?? []), row])
+  }
+
+  for (const [slug, rowsForCamera] of history) {
+    history.set(slug, rowsForCamera.slice(-HISTORY_DAYS))
+  }
+
+  return history
 }
 
 export const healthRoute = new Hono<SessionEnv>()
@@ -223,17 +243,34 @@ export const healthRoute = new Hono<SessionEnv>()
       return null
     })
 
-    const readings: CameraReading[] = []
-    for (const row of rows) {
-      readings.push({
-        ...row,
-        raw: await loadTimespans(row.slug),
-        segments: await listSegments(row.slug),
-        history: await loadHistory(row.slug),
-      })
-    }
+    // Parallel, not sequential. At one camera the difference was invisible; at
+    // seven, three serial awaits each - a MediaMTX call with a 3s deadline, a
+    // directory scan, and a query - is 21 round-trips and a health page that
+    // can take twenty seconds to say the disk is full.
+    //
+    // Safe because every branch already degrades rather than throws:
+    // loadTimespans answers null on any failure and listSegments swallows its
+    // own, so there is no rejection for Promise.all to short-circuit on. And
+    // the history query has left the loop, which is what keeps this off the
+    // max: 5 connection pool - a seven-way parallel query fan-out would have
+    // queued on it.
+    const historyBySlug = await loadHistory(
+      rows.map((row) => row.slug),
+      now,
+    )
 
-    const disk = await diskSpace()
+    const [readings, disk] = await Promise.all([
+      Promise.all(
+        rows.map(async (row): Promise<CameraReading> => {
+          const [raw, segments] = await Promise.all([
+            loadTimespans(row.slug),
+            listSegments(row.slug),
+          ])
+          return { ...row, raw, segments, history: historyBySlug.get(row.slug) ?? [] }
+        }),
+      ),
+      diskSpace(),
+    ])
 
     // Every number here is a measurement of this instant; a cached one would be
     // a health page reporting how things were.

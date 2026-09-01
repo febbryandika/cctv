@@ -14,10 +14,16 @@ import { useCallback, useSyncExternalStore } from 'react'
  * returning a raw Date.now() would be a new value on every read and re-render
  * forever. The server snapshot is null, so nothing time-dependent is rendered
  * until after hydration and there is no mismatch to warn about.
+ *
+ * A null interval subscribes to nothing and stays null. That is for a clock
+ * that is not currently drawn: seven live tiles each re-rendering once a second
+ * to update a timestamp only the focused one shows is the largest idle cost on
+ * the page, and it buys nothing.
  */
-export function useNow(intervalMs: number): number | null {
+export function useNow(intervalMs: number | null): number | null {
   const subscribe = useCallback(
     (onChange: () => void) => {
+      if (intervalMs === null) return () => {}
       const timer = setInterval(onChange, intervalMs)
       return () => clearInterval(timer)
     },
@@ -25,7 +31,7 @@ export function useNow(intervalMs: number): number | null {
   )
 
   const getSnapshot = useCallback(
-    () => Math.floor(Date.now() / intervalMs) * intervalMs,
+    () => (intervalMs === null ? null : Math.floor(Date.now() / intervalMs) * intervalMs),
     [intervalMs],
   )
 

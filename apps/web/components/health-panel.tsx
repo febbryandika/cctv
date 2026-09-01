@@ -51,7 +51,12 @@ export function HealthPanel() {
     )
   }
 
-  const readyAt = cameras.data?.cameras.find((entry) => entry.readyAt !== null)?.readyAt ?? null
+  // Per camera, by slug. This used to be the first camera with any readyAt at
+  // all, handed to every row - which at one camera was that camera's uptime and
+  // at seven is six wrong numbers.
+  const readyAtBySlug = new Map(
+    (cameras.data?.cameras ?? []).map((entry) => [entry.slug, entry.readyAt]),
+  )
 
   return (
     <div className="flex max-w-[1560px] flex-col gap-4 px-7 pt-5 pb-8">
@@ -63,13 +68,23 @@ export function HealthPanel() {
       ) : null}
 
       {data.cameras.map((camera) => (
-        <CameraRow key={camera.slug} camera={camera} readyAt={readyAt} now={now} />
+        <CameraRow
+          key={camera.slug}
+          camera={camera}
+          readyAt={readyAtBySlug.get(camera.slug) ?? null}
+          now={now}
+        />
       ))}
 
       <DiskCard disk={data.disk} checkedAt={data.checkedAt} />
 
       {data.cameras.map((camera) => (
-        <CoverageTrend key={camera.slug} name={camera.name} history={camera.history} />
+        <CoverageTrend
+          key={camera.slug}
+          slug={camera.slug}
+          name={camera.name}
+          history={camera.history}
+        />
       ))}
     </div>
   )
@@ -224,7 +239,15 @@ function DiskCard({ disk, checkedAt }: { disk: HealthResponse['disk']; checkedAt
   )
 }
 
-function CoverageTrend({ name, history }: { name: string; history: CoverageDay[] }) {
+function CoverageTrend({
+  slug,
+  name,
+  history,
+}: {
+  slug: string
+  name: string
+  history: CoverageDay[]
+}) {
   const router = useRouter()
 
   return (
@@ -256,7 +279,7 @@ function CoverageTrend({ name, history }: { name: string; history: CoverageDay[]
                 type="button"
                 // The snapshot outlives the footage, so a day here may no
                 // longer be playable — /recordings says so when it isn't.
-                onClick={() => router.push(`/recordings?day=${day.day}`)}
+                onClick={() => router.push(`/recordings?camera=${slug}&day=${day.day}`)}
                 aria-label={`${formatShortDay(day.day)}: ${formatCoverage(day.coverage, day.gapCount > 0)} covered`}
                 // Capped, so a history two days long reads as two bars rather
                 // than as two slabs filling the card.

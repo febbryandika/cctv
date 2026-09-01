@@ -326,6 +326,10 @@ const enabled = await db
   .select({ slug: cameras.slug, name: cameras.name })
   .from(cameras)
   .where(eq(cameras.enabled, true))
+  // Ordered so the run is reproducible. With one camera the order was moot;
+  // with seven, an unordered read would silently measure a different camera's
+  // time-to-first-frame each time, and that number goes in the README.
+  .orderBy(cameras.slug)
 
 if (enabled.length === 0) {
   console.error('measure: no enabled cameras — run `bun run db:seed`')
@@ -424,7 +428,8 @@ for (const camera of enabled) {
 }
 
 // One camera's worth: the number describes the operator's wait, and every
-// camera shares the same proxy and the same machine.
+// camera shares the same proxy and the same machine. Which one is named in the
+// heading, because with seven cameras "the" first frame is ambiguous.
 const first = enabled[0]
 if (first !== undefined) {
   console.log(`\nmeasure: time to first frame (median of ${ATTEMPTS}, ${first.slug})`)

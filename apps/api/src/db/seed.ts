@@ -1,4 +1,4 @@
-// Creates the single operator account and the one camera row
+// Creates the single operator account and one row per configured camera
 // (docs/ARCHITECTURE.md#the-trust-boundary, #data).
 //
 //   cd apps/api && bun run db:seed
@@ -7,7 +7,7 @@
 
 import { createLocalAccountIssuer } from '@better-auth/core/db'
 import { auth } from '../auth'
-import { cameraUrls, maskRtsp } from '../camera'
+import { cameraConfigs, maskRtsp } from '../camera'
 import { db, sql } from './index'
 import { cameras } from './schema'
 
@@ -16,7 +16,12 @@ const password = Bun.env.SEED_OPERATOR_PASSWORD ?? 'ronda-operator'
 
 // Same guard as scripts/render-mediamtx.ts, for the same reason: an empty
 // source stores a URL that looks right and never connects.
-const { main, sub, missing } = cameraUrls()
+const { cameras: configured, missing, errors } = cameraConfigs()
+
+if (errors.length > 0) {
+  console.error(`seed: ${errors.join('\n      ')}`)
+  process.exit(1)
+}
 
 if (missing.length > 0) {
   console.error(
@@ -73,22 +78,45 @@ if (!found) {
 //
 // `name` is deliberately NOT updated: it is the operator's label for the
 // camera, not configuration, and re-seeding should not rename it back.
-const [camera] = await db
-  .insert(cameras)
-  .values({
-    slug: 'yard',
-    name: 'Yard',
-    rtspMain: main, // recorded continuously
-    rtspSub: sub, // live view only
-  })
-  .onConflictDoUpdate({
-    target: cameras.slug,
-    set: { rtspMain: main, rtspSub: sub },
-  })
-  .returning({ id: cameras.id, createdAt: cameras.createdAt })
+for (const camera of configured) {
+  const [row] = await db
+    .insert(cameras)
+    .values({
+      slug: camera.slug,
+      name: camera.name,
+      rtspMain: camera.main, // recorded continuously
+      rtspSub: camera.sub, // live view only
+    })
+    .onConflictDoUpdate({
+      target: cameras.slug,
+      set: { rtspMain: camera.main, rtspSub: camera.sub },
+    })
+    .returning({ id: cameras.id, createdAt: cameras.createdAt })
 
-const fresh = camera !== undefined && Date.now() - camera.createdAt.getTime() < 5_000
-console.log(fresh ? "seed: camera 'yard' created" : "seed: camera 'yard' stream URLs updated")
+  const fresh = row !== undefined && Date.now() - row.createdAt.getTime() < 5_000
+  console.log(
+    fresh
+      ? `seed: camera '${camera.slug}' created`
+      : `seed: camera '${camera.slug}' stream URLs updated`,
+  )
+}
+
+// Reported, never deleted. stream_events and daily_coverage both reference
+// cameras.slug ON DELETE CASCADE, so pruning a camera that dropped out of
+// CAMERAS would take its whole reliability record with it - the record the
+// nightly snapshot exists to keep after the footage itself has aged out. A
+// camera commented out for an afternoon must not cost a year of history.
+const orphans = (await db.select({ slug: cameras.slug }).from(cameras)).filter(
+  (row) => !configured.some((camera) => camera.slug === row.slug),
+)
+
+for (const orphan of orphans) {
+  console.log(
+    `seed: '${orphan.slug}' is in the database but not in CAMERAS - left alone, because ` +
+      'deleting it would cascade away its stream_events and daily_coverage rows. ' +
+      'Set enabled = false by hand to hide it from the UI.',
+  )
+}
 
 await sql.end()
 
@@ -99,5 +127,8 @@ console.log('')
 console.log('  operator  ' + email)
 console.log('  password  ' + password)
 console.log('')
-console.log(`  yard      ${maskRtsp(main)}`)
-console.log(`  yard_sub  ${maskRtsp(sub)}`)
+const width = Math.max(...configured.map((camera) => camera.slug.length)) + 6
+for (const camera of configured) {
+  console.log(`  ${camera.slug.padEnd(width)}${maskRtsp(camera.main)}`)
+  console.log(`  ${`${camera.slug}_sub`.padEnd(width)}${maskRtsp(camera.sub)}`)
+}

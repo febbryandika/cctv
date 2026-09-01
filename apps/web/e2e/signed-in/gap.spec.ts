@@ -286,7 +286,11 @@ test('an outage becomes a gap in the timeline, with its duration and its cause',
   // query has staleTime 0 but no refetchInterval, and TransitionStream
   // invalidates ['health'] and ['cameras'] - never ['timeline'].
   const inside = new Date(Math.round((gapStart + gapEnd) / 2)).toISOString()
-  await page.goto(`/recordings?at=${encodeURIComponent(inside)}`)
+  // ?camera=yard, not the picker's default: the outage was on yard, /cameras
+  // orders by camera NAME, and yard does not sort first. Without this the page
+  // opens on a camera that recorded straight through and the gap assertions
+  // below look for a hole that is genuinely not there.
+  await page.goto(`/recordings?camera=yard&at=${encodeURIComponent(inside)}`)
   await expect(page.getByRole('heading', { name: 'Recordings' })).toBeVisible()
 
   // The bar draws it, and the accessible name says when and why. No testid,

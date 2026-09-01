@@ -1,4 +1,4 @@
-import { cameraUrls, maskRtsp } from '../src/camera'
+import { cameraConfigs, maskRtsp, renderPaths } from '../src/camera'
 
 // Renders mediamtx.yml from mediamtx.template.yml
 // (docs/ARCHITECTURE.md#the-media-pipeline).
@@ -25,14 +25,20 @@ const BANNER = `# GENERATED FILE — DO NOT EDIT, DO NOT COMMIT.
 # This file embeds the camera's stream URLs, which carry its credentials
 # (docs/ARCHITECTURE.md#the-trust-boundary) — hence gitignored. Edit the
 # template and re-render; anything changed here is lost on the next run.
-# Re-render after editing CAMERA_RTSP_MAIN or CAMERA_RTSP_SUB in .env.
+# Re-render after editing CAMERAS or any CAMERA_<SLUG>_* variable in .env, then
+# \`docker compose restart mediamtx\` to make MediaMTX read it.
 
 `
 
 // Unset and empty collapse into one failure: an empty source renders a config
 // that starts cleanly and never connects, which is the failure this script
 // exists to prevent.
-const { main, sub, missing } = cameraUrls()
+const { cameras, missing, errors } = cameraConfigs()
+
+if (errors.length > 0) {
+  console.error(`render:mediamtx: ${errors.join('\n                 ')}`)
+  process.exit(1)
+}
 
 if (missing.length > 0) {
   console.error(
@@ -44,9 +50,23 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
+// Time-based, per path, with no global size cap and nothing that evicts under
+// pressure — so this number times the number of cameras has to fit the disk.
+// Raise it only against a measured bytesPerHour from /health, never a datasheet
+// (docs/ARCHITECTURE.md#observability).
+const deleteAfter = process.env.RECORD_DELETE_AFTER ?? '168h'
+
+if (!/^\d+[smh]$/.test(deleteAfter)) {
+  console.error(
+    `render:mediamtx: RECORD_DELETE_AFTER=${deleteAfter} is not a MediaMTX duration — ` +
+      'an integer and s, m or h, e.g. 168h. There is no `d`.',
+  )
+  process.exit(1)
+}
+
 const vars: Record<string, string> = {
-  CAMERA_RTSP_MAIN: main,
-  CAMERA_RTSP_SUB: sub,
+  CAMERA_PATHS: renderPaths(cameras),
+  RECORD_DELETE_AFTER: deleteAfter,
 }
 
 const template = await Bun.file(TEMPLATE).text()
@@ -83,5 +103,17 @@ if (current === rendered) {
 // Masked, like `doctor` (docs/ARCHITECTURE.md#measurement,
 // #the-trust-boundary): enough to confirm the host and the path, never the
 // secret. Shared with doctor and seed so there is one implementation to audit.
-console.log(`  yard      ${maskRtsp(main)}`)
-console.log(`  yard_sub  ${maskRtsp(sub)}`)
+const overridden = cameras.filter((camera) => camera.deleteAfter !== null)
+console.log(
+  `  ${cameras.length} cameras, recordDeleteAfter ${deleteAfter}` +
+    (overridden.length === 0
+      ? ''
+      : ` (${overridden.map((camera) => `${camera.slug} ${camera.deleteAfter}`).join(', ')})`),
+)
+
+// Wide enough for the longest `<slug>_sub`, not the longest slug.
+const width = Math.max(...cameras.map((camera) => camera.slug.length)) + 6
+for (const camera of cameras) {
+  console.log(`  ${camera.slug.padEnd(width)}${maskRtsp(camera.main)}`)
+  console.log(`  ${`${camera.slug}_sub`.padEnd(width)}${maskRtsp(camera.sub)}`)
+}

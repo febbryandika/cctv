@@ -102,11 +102,16 @@ jobs:
       # operator credentials the suite defaults to, and lists localhost:3100 -
       # Playwright's port - in WEB_ORIGIN, so a clean clone needs no edits.
       #
-      # It also leaves MTX_PATHS_YARD_SOURCE commented out, so Compose
-      # interpolates the `publisher` default and fakecam is what publishes
-      # `yard`. That is what makes the gap test meaningful here:
-      # e2e/signed-in/gap.spec.ts hard-fails on CI if `yard` is pulled from a
-      # real camera instead, because stopping fakecam would then prove nothing.
+      # It also ships all seven cameras with CAMERA_<SLUG>_RTSP_MAIN=publisher,
+      # so the rendered config gives every path a publisher and the seven
+      # fakecam services are what feed them. That is what makes the gap test
+      # meaningful here: e2e/signed-in/gap.spec.ts hard-fails on CI if `yard` is
+      # pulled from a real camera instead, because stopping fakecam would then
+      # prove nothing.
+      #
+      # Seven `-c copy` ffmpeg containers is ~430 MB of footage across this job
+      # and no transcode. If the runner ever struggles, the lever is fewer
+      # cameras in .env.example, not a longer timeout.
       #
       # drizzle.config.ts loads this same file from the repo root, so it has to
       # exist before db:migrate as well as before `docker compose up`.

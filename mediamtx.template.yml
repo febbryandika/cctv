@@ -97,40 +97,37 @@ pathDefaults:
   # what is on disk, so shorter segments bound the error to ten minutes
   # (docs/ARCHITECTURE.md#timeline-gaps-and-coverage, item 4).
   recordSegmentDuration: 10m
-  recordDeleteAfter: 168h # 7 days
+  # Time-based, per path, and there is no global size cap: MediaMTX deletes by
+  # age, never under disk pressure. With N cameras on one disk this number is
+  # multiplied by N, so it is a variable rather than a literal — and it is set
+  # from a measured bytesPerHour off /health, never from a datasheet
+  # (docs/ARCHITECTURE.md#observability).
+  recordDeleteAfter: ${RECORD_DELETE_AFTER}
 
+# Two paths per camera, GENERATED — the block below is emitted by renderPaths()
+# in apps/api/src/camera.ts from CAMERAS and the CAMERA_<SLUG>_RTSP_* variables
+# in .env. Adding a camera is an .env edit and a re-render, never an edit here.
+#
+#   <slug>       main stream: high resolution, recorded continuously, never
+#                watched directly, sourceOnDemand: no — so a viewer can never
+#                disturb the recording.
+#   <slug>_sub   sub-stream: low bitrate, H.264, sourceOnDemand: yes — pulled
+#                only while a browser is connected. Live view reads this, so
+#                watching costs almost nothing.
+#
+# The sources are rendered in rather than overridden by MTX_PATHS_* variables,
+# and that is not a style choice: MediaMTX splits path names on `_`, so
+# MTX_PATHS_YARD_SUB_SOURCE is read as path `yard` key `sub_source` and silently
+# dropped. Verified against v1.20.1 — an equivalent `yardsub` path takes the
+# override and `yard_sub` does not, and neither `__` nor lowercase escapes it.
+# Rendering every source from one place removes that trap from the operator's
+# path entirely, and leaves .env as the only thing that decides where a camera
+# points.
+#
+# A camera with no hardware yet is declared by setting its CAMERA_<SLUG>_RTSP_MAIN
+# to `publisher`, which lets the matching fakecam service publish to it. Point
+# its CAMERA_<SLUG>_RTSP_SUB at rtsp://localhost:8554/<slug> and MediaMTX relays
+# its own main path on demand: live view then has something to show with no
+# camera, no second ffmpeg and no transcode.
 paths:
-  # Main stream: high resolution, recorded continuously, never watched
-  # directly — so a viewer can never disturb the recording.
-  #
-  # This `source` is the real camera, pasted from what the camera itself
-  # reports (see .env.example). Docker Compose overrides it to `publisher` via
-  # MTX_PATHS_YARD_SOURCE so the fake camera can publish to this same path — a
-  # path cannot both pull a source and accept a publisher.
-  yard:
-    source: ${CAMERA_RTSP_MAIN}
-    sourceOnDemand: no # must record whether or not anyone is watching
-    record: yes
-    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
-
-  # Sub-stream: low bitrate, H.264, pulled only while a browser is connected.
-  # Live view reads this, so watching costs almost nothing.
-  #
-  # sourceOnDemand keeps this quiet in development: it is never dialled until
-  # something actually watches it, so it does not spam connection errors the way
-  # a `no` would.
-  #
-  # This is a token rather than an MTX_PATHS_* override because no such override
-  # can address it: MediaMTX splits path names on `_`, so
-  # MTX_PATHS_YARD_SUB_SOURCE is read as path `yard` key `sub_source` and
-  # silently dropped. Verified against v1.20.1 — an equivalent `yardsub` path
-  # takes the override and `yard_sub` does not, and neither `__` nor lowercase
-  # escapes it. The substitution is done by render-mediamtx.ts instead.
-  #
-  # In development, point CAMERA_RTSP_SUB at rtsp://localhost:8554/yard so
-  # MediaMTX relays its own main path on demand: live view then has something to
-  # show with no camera, no second ffmpeg and no transcode.
-  yard_sub:
-    source: ${CAMERA_RTSP_SUB}
-    sourceOnDemand: yes
-    record: no
+${CAMERA_PATHS}

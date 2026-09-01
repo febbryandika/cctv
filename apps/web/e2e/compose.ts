@@ -93,7 +93,8 @@ export async function fakecamPrecondition(): Promise<string | null> {
     return (
       `\`yard\` is PULLED (source.type=${yard.source?.type ?? 'null'}), not published by fakecam. ` +
       'Stopping fakecam cannot interrupt a stream MediaMTX pulls for itself. ' +
-      'Comment MTX_PATHS_YARD_SOURCE out of .env, or run `MTX_PATHS_YARD_SOURCE=publisher docker compose up -d`.'
+      'Set CAMERA_YARD_RTSP_MAIN=publisher in .env, then ' +
+      '`cd apps/api && bun run render:mediamtx` and `docker compose up -d`.'
     )
   }
 

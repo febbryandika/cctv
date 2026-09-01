@@ -26,21 +26,33 @@ export function AppRail() {
   const health = useHealth()
   const session = authClient.useSession()
 
-  // One camera is the whole product (docs/ARCHITECTURE.md#what-this-is), so the
-  // rail speaks about "the camera" rather than iterating. `?? false` and not
-  // `?? true`: a camera that cannot be confirmed up is not up.
-  const online = cameras.data?.cameras.some((camera) => camera.online) ?? false
-  const offline = (cameras.data?.cameras.length ?? 0) > 0 && !online
+  // The rail is a summary, so it aggregates rather than iterating - the fleet
+  // detail is what the health page is for. `?? false` and not `?? true`: a
+  // camera that cannot be confirmed up is not up.
+  const total = cameras.data?.cameras.length ?? 0
+  const up = cameras.data?.cameras.filter((camera) => camera.online).length ?? 0
+  const online = up > 0
 
   const disk = health.data?.disk
-  const camera = health.data?.cameras[0]
+
+  // The WORST camera, never an average. A mean coverage across seven cameras
+  // hides a dead one behind six healthy ones, and a rail that reads 86% when
+  // one camera recorded nothing all day is the exact failure this project is
+  // about.
+  const measured = (health.data?.cameras ?? []).filter((entry) => entry.coverage24h !== null)
+  const camera = measured.reduce<(typeof measured)[number] | undefined>(
+    (lowest, entry) =>
+      lowest === undefined || (entry.coverage24h ?? 1) < (lowest.coverage24h ?? 1) ? entry : lowest,
+    undefined,
+  )
   const lowDisk = disk?.daysRemaining != null && disk.daysRemaining < LOW_HEADROOM_DAYS
 
   // Deliberately NOT a coverage threshold. "Below 95%" would be a number this
   // project invented, and the whole point of the coverage figure is that it is
-  // measured rather than judged. These two are facts: the camera is not
-  // publishing, or the disk fills before retention recycles it.
-  const needsAttention = offline || lowDisk
+  // measured rather than judged. These are facts: a camera is not publishing,
+  // or the disk fills before retention recycles it.
+  const someOffline = total > 0 && up < total
+  const needsAttention = someOffline || lowDisk
 
   return (
     <aside className="bg-sidebar hidden h-dvh w-[264px] shrink-0 flex-col overflow-y-auto border-r px-3.5 py-4.5 md:flex">
@@ -49,7 +61,7 @@ export function AppRail() {
         <span className="min-w-0">
           <span className="block text-base font-bold tracking-[-0.01em]">Ronda</span>
           <span className="text-muted-foreground block truncate text-[11px]">
-            {camera?.slug ?? 'yard'} · {CAMERA_TZ.replace('_', ' ')}
+            {total === 1 ? '1 camera' : `${total} cameras`} · {CAMERA_TZ.replace('_', ' ')}
           </span>
         </span>
       </Link>
@@ -91,7 +103,11 @@ export function AppRail() {
               {item.href === '/health' && needsAttention ? (
                 <span
                   className="bg-destructive text-destructive-foreground ml-auto inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold"
-                  title={offline ? 'The camera is not publishing' : 'Disk headroom is low'}
+                  title={
+                    someOffline
+                      ? `${total - up} of ${total} cameras are not publishing`
+                      : 'Disk headroom is low'
+                  }
                 >
                   !
                 </span>
@@ -104,13 +120,16 @@ export function AppRail() {
       <div className="bg-card mt-5 rounded-lg border p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted-foreground text-[11px] font-semibold tracking-[0.08em] uppercase">
-            Camera
+            Cameras
           </span>
           {cameras.data ? <StatusPill online={online} /> : null}
         </div>
         <dl className="text-muted-foreground mt-2.5 flex flex-col gap-[7px] text-xs">
           <RailStat
-            label="Coverage 24h"
+            // Named for what it is. "Coverage 24h" beside a worst-of-seven
+            // number would read as the fleet average and understate nothing -
+            // which is the wrong direction to be misread in.
+            label={total > 1 ? 'Lowest coverage 24h' : 'Coverage 24h'}
             value={
               camera && camera.coverage24h !== null
                 ? formatCoverage(camera.coverage24h, (camera.gapCount ?? 0) > 0)
