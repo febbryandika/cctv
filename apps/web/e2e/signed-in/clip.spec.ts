@@ -10,7 +10,10 @@ import { clickCentre } from '../helpers'
 // pull requests.
 
 test.beforeEach(async ({ page }) => {
-  await page.goto('/recordings')
+  // ?camera= rather than the picker's default: /cameras orders by NAME, so the
+  // first tab is whichever camera sorts first, not yard. This spec asserts a
+  // /recordings/yard/clip pathname, so it has to ask for yard by name.
+  await page.goto('/recordings?camera=yard')
   await expect(page.getByRole('heading', { name: 'Recordings' })).toBeVisible()
 })
 

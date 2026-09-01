@@ -27,7 +27,7 @@ const { select, queue } = vi.hoisted(() => {
   // poller.test.ts, duplicated rather than shared: this repo has no test-util
   // module and every suite is self-contained. Two read shapes are covered by
   // making every stage thenable - .from().orderBy() for the camera list, and
-  // .from().where().orderBy().limit() for the history.
+  // .from().where().orderBy() for the history.
   const queue: unknown[][] = []
 
   const select = vi.fn(() => {
@@ -99,6 +99,11 @@ const HISTORY = [
   { day: '2026-08-23', coverage: 0.99, gapCount: 1, longestGapSec: 120, bytesWritten: 26 * GB },
   { day: '2026-08-24', coverage: 1, gapCount: 0, longestGapSec: 0, bytesWritten: 27 * GB },
 ]
+
+// What the database hands back now: one query for every camera, so each row
+// carries the slug that the response then strips.
+const historyRows = (slug: string, rows = HISTORY) =>
+  rows.map((row) => ({ cameraSlug: slug, ...row }))
 
 const SESSION = {
   user: { id: 'u1', email: 'operator@ronda.local', name: 'Operator' },
@@ -274,7 +279,7 @@ describe('GET /health', () => {
   })
 
   it('answers with the camera list, the disk and the history', async () => {
-    queue.push(ROWS, HISTORY)
+    queue.push(ROWS, historyRows('yard'))
 
     const res = await app.request('/health', signedIn)
     const body = (await res.json()) as HealthBody
@@ -286,6 +291,39 @@ describe('GET /health', () => {
     expect(body.cameras).toHaveLength(1)
     expect(body.cameras[0]?.history).toEqual(HISTORY)
     expect(body.disk.freeBytes).toBe(120 * GB)
+  })
+
+  // The regression guard for the whole seven-camera change. /health used to do
+  // three sequential awaits per camera, one of them a query, so seven cameras
+  // meant eight queries and 21 round-trips. The count is asserted, not the
+  // latency, because the count is what silently regresses.
+  it('reads two cameras with two queries, and gives each its own history', async () => {
+    const yardHistory = historyRows('yard')
+    const cam2History = historyRows('cam2', [
+      { day: '2026-08-24', coverage: 0.5, gapCount: 4, longestGapSec: 900, bytesWritten: 13 * GB },
+    ])
+
+    queue.push(
+      [
+        { slug: 'yard', name: 'Yard', enabled: true },
+        { slug: 'cam2', name: 'Camera 2', enabled: true },
+      ],
+      // One query for both cameras, so both slugs come back interleaved in one
+      // row-set rather than as one row-set each.
+      [...yardHistory, ...cam2History],
+    )
+
+    const res = await app.request('/health', signedIn)
+    const body = (await res.json()) as HealthBody
+
+    expect(res.status).toBe(200)
+    expect(body.cameras).toHaveLength(2)
+    expect(body.cameras[0]?.history).toEqual(HISTORY)
+    expect(body.cameras[1]?.history).toEqual([
+      { day: '2026-08-24', coverage: 0.5, gapCount: 4, longestGapSec: 900, bytesWritten: 13 * GB },
+    ])
+    // Two: the camera list, then the history for both. Not one per camera.
+    expect(select).toHaveBeenCalledTimes(2)
   })
 
   // The playback API answers 400 - not 404 - for a path that has never

@@ -11,6 +11,13 @@
 # loopback guarantee (docs/ARCHITECTURE.md#the-trust-boundary) is preserved
 # rather than merely relocated.
 
+# Everything the seven fake cameras share. Only the destination path differs.
+x-fakecam: &fakecam
+  image: linuxserver/ffmpeg:latest
+  restart: unless-stopped
+  depends_on: [mediamtx]
+  volumes: [./apps/api/fixtures:/fixtures]
+
 services:
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -31,13 +38,13 @@ services:
     #
     # Render it first:  cd apps/api && bun run render:mediamtx
     command: ['/mediamtx.yml']
-    environment:
-      # mediamtx.yml gives `yard` a pull source (the real camera), but the
-      # fakecam below PUBLISHES to that same path, and a path cannot do both.
-      # MediaMTX lets any config key be overridden by an MTX_-prefixed
-      # variable, so development flips the source without editing the file.
-      # Set MTX_PATHS_YARD_SOURCE to the camera URL in .env to pull instead.
-      MTX_PATHS_YARD_SOURCE: ${MTX_PATHS_YARD_SOURCE:-publisher}
+    # No MTX_PATHS_* overrides. Each path's source comes from the rendered
+    # config and nowhere else: CAMERA_<SLUG>_RTSP_MAIN in .env is either a
+    # camera URL, which MediaMTX pulls, or the word `publisher`, which lets the
+    # matching fakecam below publish into it. An override here would have
+    # silently won over a real camera URL somebody had just rendered, and it
+    # could never address a `_sub` path anyway — MediaMTX splits MTX_PATHS_*
+    # names on `_`.
     ports:
       - '127.0.0.1:8554:8554/tcp' # RTSP  — TCP only, see rtspTransports
       - '127.0.0.1:8889:8889/tcp' # WebRTC/WHEP signalling
@@ -91,14 +98,60 @@ services:
   # Publishes to `mediamtx` by service name, not 127.0.0.1: without host
   # networking each container has its own loopback. `-rtsp_transport tcp`
   # because the server is TCP-only (ffmpeg's RTSP muxer defaults to UDP).
+  #
+  # One service per camera in CAMERAS, and the two lists must stay in step: the
+  # rendered `paths:` map is exhaustive, so a fakecam aimed at a slug nobody
+  # configured is refused and retries forever.
+  #
+  # A path configured to PULL from a real camera cannot also accept a publisher.
+  # When a camera is real, turn its fake off rather than letting it retry into a
+  # refusal for the life of the stack:
+  #
+  #     docker compose up -d --scale fakecam=0
+  #
+  # All seven share the one fixture. `-c copy` means seven of these cost no
+  # transcode and about 413 kbps each.
   fakecam:
-    image: linuxserver/ffmpeg:latest
-    restart: unless-stopped
-    depends_on: [mediamtx]
-    volumes: [./apps/api/fixtures:/fixtures]
+    <<: *fakecam
     command: >
       -re -stream_loop -1 -i /fixtures/yard-loop.mp4
       -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/yard
+
+  fakecam2:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam2
+
+  fakecam3:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam3
+
+  fakecam4:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam4
+
+  fakecam5:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam5
+
+  fakecam6:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam6
+
+  fakecam7:
+    <<: *fakecam
+    command: >
+      -re -stream_loop -1 -i /fixtures/yard-loop.mp4
+      -c copy -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam7
 
 volumes:
   pgdata:

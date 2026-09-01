@@ -104,10 +104,26 @@ async function readBufferMs(pc: RTCPeerConnection): Promise<number | null> {
 export function LivePlayer({
   slug,
   name,
+  focused = true,
+  onToggleFocus,
   onTimeToFirstFrame,
 }: {
   slug: string
   name: string
+  /**
+   * Whether this tile is the one the operator is looking at.
+   *
+   * It drives chrome density, the clock, and who owns the `f` key — never the
+   * connection. The connection effect below depends on `[slug]` and nothing
+   * else, so no focus change can tear down a WHEP session. That is a guarantee
+   * by construction rather than by care, and it is the reason focusing a camera
+   * is instant and returning to the grid does not re-handshake seven streams.
+   *
+   * Defaults to true so a lone player behaves exactly as it did before there
+   * was a grid.
+   */
+  focused?: boolean
+  onToggleFocus?: () => void
   onTimeToFirstFrame?: (ms: number) => void
 }) {
   const router = useRouter()
@@ -126,7 +142,8 @@ export function LivePlayer({
   // The frame's own clock. Same zone and same formatter as the header's — a
   // burnt-in timestamp is what makes a screenshot of this frame evidence rather
   // than a picture (docs/ARCHITECTURE.md#timeline-gaps-and-coverage).
-  const now = useNow(1_000)
+  // Only the focused tile draws a clock, so only the focused tile pays for one.
+  const now = useNow(focused ? 1_000 : null)
 
   // Held in a ref so the connection effect can report through it without taking
   // it as a dependency — that effect must run exactly once per slug, and a
@@ -165,7 +182,17 @@ export function LivePlayer({
     void shellRef.current?.requestFullscreen().catch(() => {})
   }, [])
 
+  // The listener is on `document`, so every mounted player would otherwise
+  // answer the same keypress: seven tiles meant seven competing
+  // requestFullscreen() calls on one key. Only the focused tile registers it.
+  //
+  // In grid mode that means nothing owns `f`, which is the honest answer -
+  // there is no unambiguous target - and each tile's own Fullscreen button
+  // still works. Safe to depend on `focused` here because this is a separate
+  // effect from the connection one.
   useEffect(() => {
+    if (!focused) return
+
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (isTypingTarget(event.target)) return
@@ -177,7 +204,7 @@ export function LivePlayer({
 
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [toggleFullscreen])
+  }, [focused, toggleFullscreen])
 
   useEffect(() => {
     let cancelled = false
@@ -310,7 +337,13 @@ export function LivePlayer({
   return (
     <div
       ref={shellRef}
-      className="relative min-h-[300px] flex-1 overflow-hidden rounded-xl border bg-[#0b0d12]"
+      data-testid={`camera-${slug}`}
+      className={cn(
+        'relative overflow-hidden rounded-xl border bg-[#0b0d12]',
+        // A 300px floor is right for one tile filling the view and wrong for
+        // seven of them, where it would push the grid past the viewport.
+        focused ? 'min-h-[300px] flex-1' : 'size-full min-h-0',
+      )}
     >
       <video
         ref={videoRef}
@@ -326,6 +359,18 @@ export function LivePlayer({
         }
         className={cn('size-full object-contain', live ? 'block' : 'hidden')}
       />
+
+      {/* Placed before the overlay strips so those paint - and hit-test - on
+          top of it: the Fullscreen and Last-5-minutes buttons keep their clicks
+          with no z-index anywhere. */}
+      {onToggleFocus ? (
+        <button
+          type="button"
+          onClick={onToggleFocus}
+          aria-label={focused ? 'Back to all cameras' : `Focus ${name}`}
+          className={cn('absolute inset-0', focused ? 'cursor-zoom-out' : 'cursor-zoom-in')}
+        />
+      ) : null}
 
       {live && undecodable ? (
         <Overlay>
@@ -365,8 +410,8 @@ export function LivePlayer({
             cause <span className="font-mono">camera_down</span> — not as quiet footage.
           </p>
           <Link
-            href="/recordings"
-            className="mt-0.5 inline-flex h-8 items-center rounded-md border border-white/20 px-3 text-[13px] font-medium text-white hover:bg-white/10"
+            href={`/recordings?camera=${slug}`}
+            className="pointer-events-auto mt-0.5 inline-flex h-8 items-center rounded-md border border-white/20 px-3 text-[13px] font-medium text-white hover:bg-white/10"
           >
             Open recordings
           </Link>
@@ -404,56 +449,73 @@ export function LivePlayer({
           </span>
         )}
         <span className="text-[13px] font-semibold text-white">{name}</span>
-        {/* The measured picture, not the configured one. */}
-        <span className="font-mono text-[11px] text-white/60">
-          {size && size.w > 0 ? `${size.w}×${size.h} · ` : ''}WebRTC
-        </span>
-        <div className="ml-auto flex items-center gap-3.5 font-mono text-[11px] tabular-nums text-white/75">
-          {live && bufferMs !== null ? <span>buffer {bufferMs} ms</span> : null}
-          <span>{now === null ? '--:--:--' : formatClockSeconds(new Date(now).toISOString())}</span>
-        </div>
+        {/* The measured picture, not the configured one. Dropped in the grid,
+            where it is smaller than legible and the name is what identifies the
+            tile. The burnt-in clock goes with it: a screenshot of a
+            one-seventh-scale tile is not evidence, and the focused view - the
+            one you would actually screenshot - still carries it. */}
+        {focused ? (
+          <>
+            <span className="font-mono text-[11px] text-white/60">
+              {size && size.w > 0 ? `${size.w}×${size.h} · ` : ''}WebRTC
+            </span>
+            <div className="ml-auto flex items-center gap-3.5 font-mono text-[11px] tabular-nums text-white/75">
+              {live && bufferMs !== null ? <span>buffer {bufferMs} ms</span> : null}
+              <span>
+                {now === null ? '--:--:--' : formatClockSeconds(new Date(now).toISOString())}
+              </span>
+            </div>
+          </>
+        ) : null}
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-[rgba(8,10,14,0.72)] to-transparent px-4 py-3.5">
-        <button
-          type="button"
-          onClick={toggleFullscreen}
-          className="inline-flex h-8 items-center gap-[7px] rounded-md border border-white/20 bg-[rgba(8,10,14,0.5)] px-3 text-xs font-medium text-white hover:bg-[rgba(8,10,14,0.8)]"
-        >
-          <ExpandIcon className="size-3.5" aria-hidden />
-          Fullscreen <span className="opacity-60">F</span>
-        </button>
-        {/* "What just happened?" in one click. The instant is read at click
+      {focused ? (
+        <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-[rgba(8,10,14,0.72)] to-transparent px-4 py-3.5">
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="inline-flex h-8 items-center gap-[7px] rounded-md border border-white/20 bg-[rgba(8,10,14,0.5)] px-3 text-xs font-medium text-white hover:bg-[rgba(8,10,14,0.8)]"
+          >
+            <ExpandIcon className="size-3.5" aria-hidden />
+            Fullscreen <span className="opacity-60">F</span>
+          </button>
+          {/* "What just happened?" in one click. The instant is read at click
             time, not during render — a clock in a render body is impure, and
             this one would be stale by the time it was used anyway. */}
-        <button
-          type="button"
-          onClick={() =>
-            router.push(`/recordings?at=${new Date(Date.now() - 5 * 60_000).toISOString()}`)
-          }
-          className="inline-flex h-8 items-center gap-[7px] rounded-md border border-white/20 bg-[rgba(8,10,14,0.5)] px-3 text-xs font-medium text-white hover:bg-[rgba(8,10,14,0.8)]"
-        >
-          <FilmIcon className="size-3.5" aria-hidden />
-          Last 5 minutes
-        </button>
-        {/* Which path is being RECORDED, beside a picture that is not it. The
+          <button
+            type="button"
+            onClick={() =>
+              router.push(
+                `/recordings?camera=${slug}&at=${new Date(Date.now() - 5 * 60_000).toISOString()}`,
+              )
+            }
+            className="inline-flex h-8 items-center gap-[7px] rounded-md border border-white/20 bg-[rgba(8,10,14,0.5)] px-3 text-xs font-medium text-white hover:bg-[rgba(8,10,14,0.8)]"
+          >
+            <FilmIcon className="size-3.5" aria-hidden />
+            Last 5 minutes
+          </button>
+          {/* Which path is being RECORDED, beside a picture that is not it. The
             sub-stream is what you are watching; `yard` is what is on disk. */}
-        <div className="ml-auto flex h-8 items-center gap-2 rounded-md border border-white/15 bg-[rgba(8,10,14,0.5)] px-3">
-          <span aria-hidden className="bg-rec size-[7px] rounded-[2px]" />
-          <span className="text-xs whitespace-nowrap text-white">
-            Recording <span className="font-mono text-white/65">{slug}</span> · 10-min segments
-          </span>
+          <div className="ml-auto flex h-8 items-center gap-2 rounded-md border border-white/15 bg-[rgba(8,10,14,0.5)] px-3">
+            <span aria-hidden className="bg-rec size-[7px] rounded-[2px]" />
+            <span className="text-xs whitespace-nowrap text-white">
+              Recording <span className="font-mono text-white/65">{slug}</span> · 10-min segments
+            </span>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   )
 }
 
 function Overlay({ children }: { children: React.ReactNode }) {
   return (
+    // pointer-events-none so an offline or connecting tile is still the easiest
+    // one to click on - it covers the whole shell, including the focus button
+    // beneath it. Its own link opts back in.
     <div
       role="status"
-      className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0b0d12] p-8 text-center"
+      className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0b0d12] p-8 text-center"
     >
       {children}
     </div>

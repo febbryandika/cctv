@@ -118,9 +118,10 @@ wants on a live camera, and WebRTC covers every browser this targets.
 
 ### Why live view reads the sub-stream
 
-Each camera is two MediaMTX paths: `yard` — high resolution, recorded
-continuously, `sourceOnDemand: no` — and `yard_sub` — low bitrate, H.264, pulled
-only while someone is watching, never recorded.
+Each camera is two MediaMTX paths, named after its slug: `yard` — high
+resolution, recorded continuously, `sourceOnDemand: no` — and `yard_sub` — low
+bitrate, H.264, pulled only while someone is watching, never recorded. Seven
+cameras is fourteen paths, all generated from one list in `.env`.
 
 Live view reads `yard_sub`, so watching costs almost nothing and **a viewer can
 never disturb the recording** ([the two
@@ -315,7 +316,7 @@ decided yet would be guessing, and the guess would rot.
 
 ```bash
 git clone <repo> && cd cctv
-cp .env.example .env                 # camera IP, ONVIF password, DATABASE_URL
+cp .env.example .env                 # camera list, stream URLs, DATABASE_URL
 mkdir -p recordings                  # bind-mount target, owned by you not root
 (cd apps/api && bun run render:mediamtx)   # .env → mediamtx.yml (generated)
 docker compose up -d                 # MediaMTX + fake camera + postgres
@@ -324,13 +325,61 @@ cd apps/web  && pnpm install && pnpm dev
 ```
 
 `mediamtx.yml` is **generated** from the tracked `mediamtx.template.yml` and is
-not itself tracked: the camera's RTSP path is
-`rtsp://<ip>:5543/<md5(ONVIF_PASSWORD)>/live/channel0`, so committing the config
-would commit a password hash
-([why](docs/ARCHITECTURE.md#the-trust-boundary)). Re-run the render step after
-changing `CAMERA_IP` or `ONVIF_PASSWORD`. If the file is missing,
-`docker compose up` fails rather than starting MediaMTX on its defaults — which
-would quietly mean HLS on, RTMP on, and nothing recorded.
+not itself tracked: a stream URL carries the camera's credentials, either as a
+password in userinfo or as `md5(password)` in the path, so committing the config
+would commit them ([why](docs/ARCHITECTURE.md#the-trust-boundary)). If the file
+is missing, `docker compose up` fails rather than starting MediaMTX on its
+defaults — which would quietly mean HLS on, RTMP on, and nothing recorded.
+
+**The camera list lives in `.env` and nowhere else.** `CAMERAS` is an ordered
+list of slugs, and each one gets three variables:
+
+```bash
+CAMERAS=yard,cam2,cam3,cam4,cam5,cam6,cam7
+CAMERA_YARD_NAME=Yard
+CAMERA_YARD_RTSP_MAIN=rtsp://admin:pw@192.168.1.50:554/V_ENC_000   # recorded
+CAMERA_YARD_RTSP_SUB=rtsp://localhost:8554/yard                     # live view
+```
+
+A slug is a MediaMTX path name, a directory under `recordings/`, and half of
+those variable names, so it is lowercase letters and digits only — no dash
+(illegal in an environment variable name) and no underscore (MediaMTX splits
+`MTX_PATHS_*` on `_`, and `<slug>_sub` is already the live-view path). Choose
+them once: renaming one later means moving its recordings directory and
+rewriting `stream_events` and `daily_coverage` by hand, because both foreign
+keys are `ON DELETE CASCADE`, not `ON UPDATE`. The label in
+`CAMERA_<SLUG>_NAME` is the part that *is* cheap to change.
+
+`CAMERA_<SLUG>_RTSP_MAIN=publisher` declares a camera with no hardware yet: the
+matching `fakecam` service publishes the test fixture into it. That is how a
+fresh clone gets seven working cameras with no camera.
+
+After any change, re-render **and restart** — MediaMTX reads the file at
+startup, so a render on its own changes nothing:
+
+```bash
+(cd apps/api && bun run render:mediamtx) && docker compose restart mediamtx
+```
+
+`RECORD_DELETE_AFTER` sets retention, and `CAMERA_<SLUG>_RECORD_DELETE_AFTER`
+overrides it for one camera. The override exists because retention is a
+`pathDefaults` value: without it, dropping the fleet to `12h` to keep seven fake
+cameras off a laptop disk would also reap the archive of the one real camera,
+within minutes of the restart.
+
+Retention is by **age only** — there is no global size cap and nothing evicts
+under disk pressure, so `RECORD_DELETE_AFTER` × the number of cameras has to fit
+the disk. Set it from a measured `bytesPerHour` off `/health`, not from a
+datasheet: if the real bitrate runs high the disk fills and *every* camera stops
+recording at once, and `daysRemaining` will have been counting down to it with
+nothing acting on the warning.
+
+If a camera is real, turn its fake off so it is not retrying into a refusal for
+the life of the stack — a path that pulls cannot also accept a publisher:
+
+```bash
+docker compose up -d --scale fakecam=0     # yard is real hardware
+```
 
 Ports are published to `127.0.0.1` only ([the trust
 boundary](docs/ARCHITECTURE.md#the-trust-boundary)). Postgres is on **5439**, not

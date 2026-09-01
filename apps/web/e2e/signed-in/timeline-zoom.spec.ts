@@ -16,7 +16,9 @@ const centreOf = async (element: Locator) => {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto('/recordings')
+  // Named, not defaulted - see clip.spec.ts. The picker's first tab is ordered
+  // by camera name, which is not yard.
+  await page.goto('/recordings?camera=yard')
   await expect(page.getByRole('heading', { name: 'Recordings' })).toBeVisible()
 })
 

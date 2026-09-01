@@ -80,12 +80,25 @@ not a feature.
 writes the real config, which is gitignored — see
 [the trust boundary](#the-trust-boundary) for why.
 
-**Two paths per camera, on purpose:**
+**Two paths per camera, on purpose**, named after the camera's slug:
 
 | Path | Resolution | Recorded | Pulled |
 |---|---|---|---|
-| `yard` | main, high | continuously | always (`sourceOnDemand: no`) |
-| `yard_sub` | sub, low bitrate H.264 | never | only while someone watches |
+| `<slug>` | main, high | continuously | always (`sourceOnDemand: no`) |
+| `<slug>_sub` | sub, low bitrate H.264 | never | only while someone watches |
+
+The whole `paths:` block is **generated**. `CAMERAS` in `.env` is an ordered
+list of slugs and `renderPaths()` in `apps/api/src/camera.ts` emits two entries
+for each, so adding a camera is an `.env` edit and a re-render rather than a
+config edit. That function lives in `src/` rather than beside the script that
+calls it for one reason: `vitest.config.ts` covers `src/**` and never
+`scripts/`, and the rendered config is the one artefact here where a silent
+mistake costs a day of footage instead of a stack trace.
+
+A slug is constrained to `[a-z][a-z0-9]*` because it has to survive three
+namings at once — a MediaMTX path name, a directory under `RECORDINGS_DIR`, and
+the middle of an environment variable name. That also guarantees no slug can
+ever collide with another slug's `_sub` path.
 
 By default live view reads `yard_sub`, so **watching costs almost nothing and a
 viewer can never disturb the recording.** That is enforced by the API rather
@@ -120,19 +133,32 @@ complete, unauthenticated way to read the camera.
 
 ### Development without a camera
 
-Docker Compose runs MediaMTX, Postgres, and `fakecam` — ffmpeg looping an H.264
-fixture into the `yard` path. The fixture is already H.264 so `-c copy` works:
-no transcode, negligible CPU, and the stream behaves like a real camera.
+Docker Compose runs MediaMTX, Postgres, and one `fakecam` service per camera —
+ffmpeg looping the same H.264 fixture into each path. The fixture is already
+H.264 so `-c copy` works: no transcode, negligible CPU at about 413 kbps each,
+and the streams behave like real cameras. The fakecam list and `CAMERAS` have to
+stay in step, because the generated `paths:` map is exhaustive and MediaMTX
+refuses a publish to a path nobody configured.
 
-`yard_sub` has no publisher in development, and it cannot get one from a
-Compose environment variable: MediaMTX splits path names on `_`, so
-`MTX_PATHS_YARD_SUB_SOURCE` is parsed as path `yard`, key `sub_source`, and
-discarded **silently**. (Verified against v1.20.1: an equivalent `yardsub` path
-takes the override and `yard_sub` does not, and neither `__` nor lowercase
-escapes it.) So the sub-stream's source is a render-time token instead.
-`.env.example` points it at the server's own `yard` path, which MediaMTX relays
-on demand — no second ffmpeg, no transcode, and the on-demand property is
-preserved. Leave `YARD_SUB_SOURCE` unset and it renders the real camera URL.
+Every source is a render-time value, and none of them is an `MTX_PATHS_*`
+override. That is not a style choice. A sub-stream could never be addressed by
+one: MediaMTX splits path names on `_`, so `MTX_PATHS_YARD_SUB_SOURCE` is parsed
+as path `yard`, key `sub_source`, and discarded **silently**. (Verified against
+v1.20.1: an equivalent `yardsub` path takes the override and `yard_sub` does
+not, and neither `__` nor lowercase escapes it.) And an override on a main path
+was worse than redundant — it won unconditionally over whatever had just been
+rendered, so a real camera URL in `.env` could be discarded at container start
+with nothing said.
+
+So a fake camera is declared the same way a real one is: its
+`CAMERA_<SLUG>_RTSP_MAIN` is the word `publisher`, which lets the matching
+`fakecam` service publish into it, and its `CAMERA_<SLUG>_RTSP_SUB` points at
+MediaMTX's own copy of that path, which it relays on demand — no second ffmpeg,
+no transcode, and the on-demand property is preserved.
+
+A path that pulls from a real camera cannot also accept a publisher, so turn
+that camera's fake off rather than leaving it to retry into a refusal:
+`docker compose up -d --scale fakecam=0`.
 
 `docker compose stop fakecam` produces a genuine recording gap, which is how the
 timeline gets tested without unplugging anything.

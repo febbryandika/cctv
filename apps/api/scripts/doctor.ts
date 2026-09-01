@@ -1,7 +1,7 @@
-import { cameraUrls, maskRtsp } from '../src/camera'
+import { type CameraConfig, cameraConfigs, maskRtsp } from '../src/camera'
 
 // Setup-time pre-flight (docs/ARCHITECTURE.md#measurement). Probes both RTSP
-// URLs with ffprobe, measures the real bitrate with ffmpeg, then makes the three
+// URLs of every configured camera with ffprobe, measures the real bitrate with ffmpeg, then makes the three
 // calls that decide whether a deployment can work at all: an H.265 main stream
 // will not play back in most browsers, a sub-stream that is not H.264 means live
 // view needs transcoding this project deliberately does not do, and a bitrate
@@ -15,7 +15,9 @@ import { cameraUrls, maskRtsp } from '../src/camera'
 import { getPath } from '../src/mediamtx/client'
 
 // Long enough that a keyframe interval and a few seconds of motion are inside
-// the sample; short enough that the whole run stays under a minute.
+// the sample. Two probes per camera run in parallel but cameras run in
+// sequence, so seven cameras is a couple of minutes rather than fourteen
+// simultaneous RTSP sessions against a server that is also recording.
 const PROBE_SECONDS = 10
 const PROBE_TIMEOUT_MS = 45_000
 
@@ -32,7 +34,12 @@ const RECORDINGS_DIR = new URL(
 // Unset and empty collapse into one failure, exactly as
 // scripts/render-mediamtx.ts does: probing an empty URL fails in a way that
 // looks like a broken camera rather than a missing setting.
-const { main: cameraMain, sub: cameraSub, missing } = cameraUrls()
+const { cameras: configured, missing, errors } = cameraConfigs()
+
+if (errors.length > 0) {
+  console.error(`doctor: ${errors.join('\n        ')}`)
+  process.exit(1)
+}
 
 if (missing.length > 0) {
   console.error(
@@ -74,8 +81,10 @@ async function run(binary: string, args: string[], timeoutMs: number): Promise<C
   return { code: await proc.exited, stdout, stderr }
 }
 
-// `${n}m`, `${n}h`, `${n}s` as MediaMTX writes them. The trailing-comment guard
-// matters: the rendered config carries `recordDeleteAfter: 168h # 7 days`.
+// `${n}m`, `${n}h`, `${n}s` as MediaMTX writes them. Reads the FIRST match,
+// which is the pathDefaults value - a per-camera override renders later in the
+// file and is reported separately, because a fleet on mixed retention has no
+// single number for this check to use.
 function configSeconds(yml: string, key: string, fallback: number): number {
   const match = new RegExp(`^\\s*${key}:\\s*(\\d+)([smh])`, 'm').exec(yml)
   if (!match) return fallback
@@ -172,14 +181,14 @@ const mbps = (bps: number) => `${(bps / 1_000_000).toFixed(2)} Mbps`
 // camera PUBLISHES to `yard` instead, so the camera URL answers nothing and
 // probing it would report a broken deployment that is working fine. MediaMTX
 // itself is the only honest source for which of the two is true.
-async function mainStreamUrl(): Promise<{ url: string; note: string }> {
-  const camera = { url: cameraMain, note: 'pulled by MediaMTX from the camera' }
+async function mainStreamUrl(camera: CameraConfig): Promise<{ url: string; note: string }> {
+  const pulled = { url: camera.main, note: 'pulled by MediaMTX from the camera' }
 
   try {
-    const path = await getPath('yard')
+    const path = await getPath(camera.slug)
     if (path?.source && path.source.type !== 'rtspSource') {
       return {
-        url: 'rtsp://127.0.0.1:8554/yard',
+        url: `rtsp://127.0.0.1:8554/${camera.slug}`,
         note: `published to MediaMTX by another process (${path.source.type}), not pulled`,
       }
     }
@@ -188,27 +197,13 @@ async function mainStreamUrl(): Promise<{ url: string; note: string }> {
     // what this script is for. Probe it and let the probe be the verdict.
   }
 
-  return camera
+  return pulled
 }
-
-const subUrl = cameraSub
-const main = await mainStreamUrl()
-
-console.log('doctor: resolved stream URLs')
-console.log(`  main      ${mask(main.url)}`)
-console.log(`            ${main.note}`)
-console.log(`  sub       ${mask(subUrl)}`)
-console.log(`\ndoctor: probing both streams (${PROBE_SECONDS}s sample each)`)
-
-const [mainStream, subStream] = await Promise.all([probe(main.url), probe(subUrl)])
 
 const describe = (stream: Stream | null) =>
   stream === null
     ? 'unreachable'
     : `${stream.codec}  ${stream.width}x${stream.height}  ${stream.fps.toFixed(0)}fps  ${mbps(stream.bitrateBps)}`
-
-console.log(`  main      ${describe(mainStream)}`)
-console.log(`  sub       ${describe(subStream)}`)
 
 const failures: string[] = []
 const warnings: string[] = []
@@ -219,7 +214,7 @@ const warnings: string[] = []
 // one without. Exiting non-zero for a setup that works on the operator's own
 // machine would make `doctor` the thing that lies.
 const report = (name: string, level: 'ok' | 'warn' | 'FAIL', detail: string) => {
-  console.log(`  ${name.padEnd(18)}${level.padEnd(4)}  ${detail}`)
+  console.log(`  ${name.padEnd(24)}${level.padEnd(4)}  ${detail}`)
   if (level === 'FAIL') failures.push(name)
   if (level === 'warn') warnings.push(name)
 }
@@ -227,52 +222,93 @@ const report = (name: string, level: 'ok' | 'warn' | 'FAIL', detail: string) => 
 const check = (name: string, ok: boolean, detail: string) =>
   report(name, ok ? 'ok' : 'FAIL', detail)
 
+// Every camera's measured main-stream bitrate, because retention is a question
+// about the SHARED disk and cannot be answered one camera at a time.
+const mainStreams: (Stream | null)[] = []
+
+for (const camera of configured) {
+  const main = await mainStreamUrl(camera)
+
+  console.log(`\ndoctor: ${camera.slug} — resolved stream URLs`)
+  console.log(`  main      ${mask(main.url)}`)
+  console.log(`            ${main.note}`)
+  console.log(`  sub       ${mask(camera.sub)}`)
+  console.log(`doctor: ${camera.slug} — probing both streams (${PROBE_SECONDS}s sample each)`)
+
+  const [mainStream, subStream] = await Promise.all([probe(main.url), probe(camera.sub)])
+  mainStreams.push(mainStream)
+
+  console.log(`  main      ${describe(mainStream)}`)
+  console.log(`  sub       ${describe(subStream)}`)
+
+  // H.265 records smaller and plays back conditionally. Measured against Chrome
+  // 152 on Apple silicon it plays fine — canPlayType says "probably", MSE
+  // accepts it, and a 2304x1296 hvc1 clip decodes — because the machine has a
+  // hardware HEVC decoder and Chrome will use it. Safari is the same. A browser
+  // on hardware without one plays nothing, and Playwright's bundled Chromium
+  // ships no HEVC at all, so an e2e suite pointed at H.265 footage would fail.
+  //
+  // So it is a warning about portability, not a broken install. The project
+  // does not transcode (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do);
+  // the escape hatch is recording the H.264 sub-stream instead.
+  report(
+    `${camera.slug} main codec`,
+    mainStream === null ? 'FAIL' : mainStream.codec === 'hevc' ? 'warn' : 'ok',
+    mainStream === null
+      ? `main stream unreachable — check CAMERA_${camera.slug.toUpperCase()}_RTSP_MAIN, then re-run render:mediamtx`
+      : mainStream.codec === 'hevc'
+        ? 'H.265 needs a hardware decoder — plays in Chrome/Safari on this Mac, not everywhere'
+        : `${mainStream.codec} plays in every target browser`,
+  )
+
+  check(
+    `${camera.slug} sub codec`,
+    subStream !== null && subStream.codec === 'h264',
+    subStream === null
+      ? `sub-stream unreachable — live view has nothing to read (check CAMERA_${camera.slug.toUpperCase()}_RTSP_SUB)`
+      : subStream.codec === 'h264'
+        ? 'h264, so live view needs no transcode'
+        : `${subStream.codec} would need transcoding, which this project does not do`,
+  )
+}
+
 console.log('\ndoctor: checks')
 
-// H.265 records smaller and plays back conditionally. Measured against Chrome
-// 152 on Apple silicon it plays fine — canPlayType says "probably", MSE accepts
-// it, and a 2304x1296 hvc1 clip decodes — because the machine has a hardware
-// HEVC decoder and Chrome will use it. Safari is the same. A browser on
-// hardware without one plays nothing, and Playwright's bundled Chromium ships
-// no HEVC at all, so an e2e suite pointed at H.265 footage would fail.
+// One fleet-level verdict, not one per camera. Every camera writes to the same
+// disk, so seven per-camera checks would each pass comfortably while the fleet
+// overran it — which is the exact failure this check exists to catch. Same
+// reasoning as routes/health.ts, which sums bytesWritten24h across cameras
+// before projecting daysRemaining.
 //
-// So it is a warning about portability, not a broken install. The project does
-// not transcode (docs/ARCHITECTURE.md#what-this-deliberately-does-not-do); the
-// escape hatch is recording the H.264 sub-stream instead.
-report(
-  'main codec',
-  mainStream === null ? 'FAIL' : mainStream.codec === 'hevc' ? 'warn' : 'ok',
-  mainStream === null
-    ? 'main stream unreachable — check CAMERA_RTSP_MAIN, then re-run render:mediamtx'
-    : mainStream.codec === 'hevc'
-      ? 'H.265 needs a hardware decoder — plays in Chrome/Safari on this Mac, not everywhere'
-      : `${mainStream.codec} plays in every target browser`,
-)
-
-check(
-  'sub codec',
-  subStream !== null && subStream.codec === 'h264',
-  subStream === null
-    ? 'sub-stream unreachable — live view has nothing to read (check CAMERA_RTSP_SUB)'
-    : subStream.codec === 'h264'
-      ? 'h264, so live view needs no transcode'
-      : `${subStream.codec} would need transcoding, which this project does not do`,
-)
-
-// A retention setting nobody checked against a real bitrate is a guess.
+// Main streams only: the sub-streams are `record: no` and cost nothing on disk.
 const yml = (await Bun.file(MEDIAMTX_YML).exists()) ? await Bun.file(MEDIAMTX_YML).text() : ''
 const retentionDays = configSeconds(yml, 'recordDeleteAfter', 168 * 3600) / 86_400
 const free = await freeBytes(RECORDINGS_DIR)
-const bytesPerDay = ((mainStream?.bitrateBps ?? 0) / 8) * 86_400
+const bytesPerDay = mainStreams.reduce(
+  (total, stream) => total + ((stream?.bitrateBps ?? 0) / 8) * 86_400,
+  0,
+)
 const daysUntilFull = bytesPerDay > 0 ? free / bytesPerDay : Infinity
+
+// Which camera dominates is the actionable half of the number.
+for (const [index, stream] of mainStreams.entries()) {
+  if (stream === null) continue
+  const slug = configured[index]?.slug ?? '?'
+  console.log(`  ${`${slug} writes`.padEnd(24)}      ${gb((stream.bitrateBps / 8) * 86_400)}/day`)
+}
+
+const overrides = configured.filter((camera) => camera.deleteAfter !== null)
 
 check(
   'retention fits',
   bytesPerDay > 0 && daysUntilFull >= retentionDays,
   bytesPerDay === 0
     ? 'no measured bitrate, so retention cannot be projected'
-    : `${gb(bytesPerDay)}/day, ${gb(free)} free = ${daysUntilFull.toFixed(1)} days;` +
+    : `${configured.length} cameras write ${gb(bytesPerDay)}/day, ${gb(free)} free = ${daysUntilFull.toFixed(1)} days;` +
         ` recordDeleteAfter keeps ${retentionDays.toFixed(0)}` +
+        (overrides.length === 0
+          ? ''
+          : ` (${overrides.map((camera) => `${camera.slug} ${camera.deleteAfter}`).join(', ')} override it)`) +
         (daysUntilFull >= retentionDays ? '' : ' — the disk fills before retention expires'),
 )
 

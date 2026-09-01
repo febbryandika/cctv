@@ -30,7 +30,10 @@ test('sign in, watch live, open recordings, play a recorded moment', async ({ pa
   // The element is display:none until the WHEP handshake reports connected
   // (components/live-player.tsx), so visibility IS the connection gate - there
   // is no need to read the LIVE chip to know signalling finished.
-  const video = page.locator('video')
+  // Scoped to one tile. The live page renders a player per camera, so a bare
+  // locator('video') is a strict-mode violation the moment there is more than
+  // one - and the camera this journey is about is `yard`, the one CI gates on.
+  const video = page.getByTestId('camera-yard').locator('video')
   await expect(video, 'live view never connected').toBeVisible({ timeout: 5_000 })
 
   // A frame the compositor actually PRESENTED.
@@ -63,7 +66,7 @@ test('sign in, watch live, open recordings, play a recorded moment', async ({ pa
 
   // The operator-visible half of the same fact, read off the page rather than
   // from config.
-  await expect(page.getByText('LIVE', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('camera-yard').getByText('LIVE', { exact: true })).toBeVisible()
 
   // Navigate by the rail, as an operator would, rather than by URL.
   //

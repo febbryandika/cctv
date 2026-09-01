@@ -1,8 +1,15 @@
 import { connection } from 'next/server'
-import { Timeline } from '@/components/timeline'
+import { RecordingsBrowser } from '@/components/recordings-browser'
 import { localDay, todayLocalDay } from '@/lib/camera-time'
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+// Shape only. This page has no database and must not fetch the camera list to
+// find out whether a slug exists - the picker does that, and falls back to the
+// first camera when the slug is not in the fleet. Same discipline as
+// DAY_PATTERN above: reject what cannot be a slug, let the client reject what
+// merely is not one of ours.
+const SLUG_PATTERN = /^[a-z][a-z0-9]*$/
 
 const one = (value: string | string[] | undefined) =>
   typeof value === 'string' ? value : undefined
@@ -29,5 +36,10 @@ export default async function RecordingsPage({ searchParams }: PageProps<'/recor
   const requested = jumpTo !== undefined ? localDay(jumpTo) : one(params.day)
   const day = requested && DAY_PATTERN.test(requested) && requested <= today ? requested : undefined
 
-  return <Timeline slug="yard" today={today} initialDay={day} initialAtMs={jumpTo} />
+  const asked = one(params.camera)
+  const camera = asked && SLUG_PATTERN.test(asked) ? asked : undefined
+
+  return (
+    <RecordingsBrowser initialSlug={camera} today={today} initialDay={day} initialAtMs={jumpTo} />
+  )
 }
