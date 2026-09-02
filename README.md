@@ -1,8 +1,8 @@
 # Ronda
 
-Local CCTV for one ONVIF camera: sub-second live view in the browser, seven days
-of continuous recording, and a timeline that shows you the holes instead of
-hiding them.
+Local CCTV for a small camera fleet — seven in the reference install: sub-second
+live view in the browser, weeks of continuous recording, and a timeline that
+shows you the holes instead of hiding them.
 
 ![Live view, then scrubbing the timeline into a recorded gap and back](docs/screenshots/ronda.gif)
 
@@ -23,7 +23,7 @@ no recorder, because it costs you the chance to fix the camera.
 ## Architecture
 
 ```
-  camera                MediaMTX                  Hono API              Next.js
+ 7 cameras              MediaMTX                  Hono API              Next.js
 (ONVIF/RTSP)         (loopback only)               (Bun)                 (web)
      │                     │                         │                     │
      ├──── RTSP pull ─────►│                         │                     │
@@ -33,7 +33,7 @@ no recorder, because it costs you the chance to fix the camera.
      │                     │                         │      session cookie │
      │                     │═══════ WebRTC media, browser ↔ MediaMTX ══════►│
      │                     ▼                         ▼
-     │              ./recordings/              Neon Postgres
+     │           ./recordings/<slug>/          Neon Postgres
      │           fMP4, 10-min segments        auth · stream_events
      │        the source of truth for          · daily_coverage
      │            what was recorded         (never video, never paths)
@@ -47,7 +47,7 @@ the only way in ([the trust boundary](docs/ARCHITECTURE.md#the-trust-boundary)).
 
 Because the two halves belong in different places, and it is cheaper to admit
 that now than to discover it later. The media server, the recordings and the
-disk are physically bound to the machine that can reach the camera; the UI
+disk are physically bound to the machine that can reach the cameras; the UI
 eventually belongs wherever the operator is. Modelling that split as a process
 boundary today makes the later move a base-URL change instead of a rewrite.
 
@@ -67,7 +67,7 @@ ARCHITECTURE.md](docs/ARCHITECTURE.md#why-a-separate-api-server).
 ## How live view works
 
 The browser cannot play RTSP — that is a protocol mismatch, not a library gap —
-so something has to translate. MediaMTX serves the camera over WebRTC, and the
+so something has to translate. MediaMTX serves each camera over WebRTC, and the
 API brokers the handshake. WHEP, end to end:
 
 1. The browser creates an `RTCPeerConnection`, adds a `recvonly` video
@@ -80,6 +80,11 @@ API brokers the handshake. WHEP, end to end:
    MediaMTX directly over ICE; only signalling ever goes through the API.
 5. On unmount or `pagehide`, a `DELETE` to that rewritten URL tears the session
    down.
+
+Every camera mounts its own player, so the live page runs seven of these at
+once. Clicking a tile fills the view and the rest are **hidden, not unmounted**
+— focusing is a layout change, so no session is torn down and going back to the
+grid is instant rather than seven fresh handshakes.
 
 ### The `Location` header is the whole trick
 
@@ -132,11 +137,13 @@ reaches the recorded path.
 
 ## How playback works
 
-**Segments.** MediaMTX writes fMP4 to `recordings/yard/` in ten-minute segments
-and deletes them after seven days. Ten minutes rather than the one-hour default
-for a specific reason: the durations the playback API reports can disagree with
-what is on disk, most visibly on the segment currently being written, so a
-shorter segment bounds that error to ten minutes instead of an hour.
+**Segments.** MediaMTX writes fMP4 to `recordings/<slug>/` — one directory per
+camera — in ten-minute segments, and deletes them after `RECORD_DELETE_AFTER`,
+about three weeks in the reference install. Ten minutes rather than the one-hour
+default for a specific reason: the durations the playback API reports can
+disagree with what is on disk, most visibly on the segment currently being
+written, so a shorter segment bounds that error to ten minutes instead of an
+hour.
 
 **Timespans.** Asking MediaMTX's playback API for `/list?path=yard` returns
 *timespans* — contiguous runs, already concatenated across the segment
@@ -174,7 +181,8 @@ explanation. That is the same honesty rule as the timeline, one layer down.
 
 A recorder that hides its gaps is worse than no recorder, so the system measures
 itself and the number goes here — whatever it says. `cd apps/api && bun run
-measure`, against the fake camera on a development laptop:
+measure`, which reports every camera in turn. One of them, against a fake camera
+on a development laptop:
 
 ```
 measure: coverage (yard)
@@ -406,7 +414,9 @@ one operator account and `seed` is the only thing that can create it, so
 `POST /api/auth/sign-up/email` answers `400 EMAIL_PASSWORD_SIGN_UP_DISABLED`.
 `seed` is idempotent; re-running it changes nothing.
 
-Four checks say the media layer is actually working, not merely running:
+Four checks say the media layer is actually working, not merely running. They
+use `yard` as the example; every camera in `CAMERAS` has the same two paths and
+answers the same way:
 
 ```bash
 # 1 — the stream plays
