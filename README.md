@@ -364,8 +364,9 @@ startup, so a render on its own changes nothing:
 `RECORD_DELETE_AFTER` sets retention, and `CAMERA_<SLUG>_RECORD_DELETE_AFTER`
 overrides it for one camera. The override exists because retention is a
 `pathDefaults` value: without it, dropping the fleet to `12h` to keep seven fake
-cameras off a laptop disk would also reap the archive of the one real camera,
-within minutes of the restart.
+cameras off a laptop disk would also reap the archive of a real camera, within
+minutes of the restart. It is also how a till camera keeps three weeks while a
+stockroom keeps one.
 
 Retention is by **age only** — there is no global size cap and nothing evicts
 under disk pressure, so `RECORD_DELETE_AFTER` × the number of cameras has to fit
@@ -467,3 +468,65 @@ pass having proved nothing. It skips locally with an explanation and fails on
 CI.
 
 Open <http://localhost:3000>.
+
+## Recording settings, and what they cost
+
+The camera's own encoder settings decide storage; the app only records what
+arrives. Nothing here is read from `.env` — it is configured in the camera's web
+UI — but it is the first thing an install gets wrong, so it is written down.
+
+**The reference install: seven 1080p cameras, 15 fps, H.264, capped VBR at
+2 Mbps, on a 4 TB drive — about 136 GB/day and ~22 days of retention.**
+
+| Setting | Value |
+|---|---|
+| Resolution | 1920×1080 (main stream) |
+| Framerate | 15 fps |
+| Codec | H.264, High profile |
+| Rate control | VBR with a **max bitrate** of 2 Mbps — capped, not unlimited |
+| I-frame interval | 30 (2 seconds at 15 fps) |
+| Min shutter | ~1/100s in a dim room, so hands do not smear |
+| Sub-stream | H.264, low resolution — `doctor` **fails** on anything else |
+
+Storage is `bitrate × 10.8 GB/day` per camera, so for seven cameras a 4 TB drive
+(plan for ~3.3 TB, leaving headroom a VBR overshoot cannot eat) buys:
+
+| 1080p H.264 | GB/day/cam | GB/day, all 7 | Retention |
+|---|---|---|---|
+| 30 fps @ 3.0 Mbps | 32.4 | 227 | 15 days |
+| 30 fps @ 2.5 Mbps | 27.0 | 189 | 17 days |
+| **15 fps @ 2.0 Mbps** | **21.6** | **151** | **22 days** |
+| 15 fps @ 1.8 Mbps | 19.4 | 136 | 24 days |
+| 15 fps @ 1.5 Mbps | 16.2 | 113 | 29 days |
+| 12 fps @ 1.3 Mbps | 14.0 | 98 | 34 days |
+
+**Why 15 fps rather than 30.** Bitrate is spread across frames, so halving the
+framerate doubles the bits each frame gets: 15 fps at 1.8 Mbps is ~120 kbit per
+frame against ~83 kbit at 30 fps and 2.5 Mbps — smaller *and* sharper. Human
+review needs per-frame clarity — a face, what is in a hand — not smooth motion,
+which is why 12–15 fps is what retail installs normally run. If the footage ever
+becomes training data for computer vision the trade inverts, because concealment
+is a sub-second hand action and you cannot recover frames you did not record.
+
+**Why capped VBR rather than plain VBR.** Unbounded VBR makes the storage
+projection a guess, and the failure mode here is a full disk stopping all seven
+cameras at once. A ceiling turns the projection into an upper bound. Size the
+drive for the cap, not the average — the overnight saving is real but cannot be
+banked.
+
+**Why H.264 rather than H.265.** H.265 would roughly halve all of the above, and
+`doctor` reports it as a warning rather than a failure, because it is a
+portability problem and not a broken install. But a clip is served into a plain
+`<video>`, and HEVC decoding is hardware-gated: the same recording plays in
+Chrome and Safari on a machine with a decoder and shows a blank frame on one
+without. Playwright's bundled Chromium ships no HEVC at all. Disk is the cheaper
+resource.
+
+Start at `RECORD_DELETE_AFTER=336h`, run every camera for a week, read the real
+`bytesPerHour` off `/health`, then raise it. The table is an estimate; that
+measurement is the fact.
+
+At 136 GB/day the drive takes ~50 TB of writes a year, which is at the limit of
+what a desktop drive is rated for — so **CMR and surveillance-rated** (WD Purple,
+Seagate SkyHawk), never SMR. An SMR write stall surfaces as a gap in the
+timeline, which is the one thing this project exists not to hide.
